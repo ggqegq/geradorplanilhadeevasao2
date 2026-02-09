@@ -1,400 +1,521 @@
 """
-ARQUIVO 1: Automatiza o processo de login, geração de relatórios e downloads
-Executa: python 1_gerar_relatorios.py
+Automador de Relatórios - UFF Química
+Versão 2: Login com CPF + Filtros Corrigidos
 """
 
+import streamlit as st
 import requests
-from bs4 import BeautifulSoup
 import time
 import os
+import re
+from bs4 import BeautifulSoup
+import pandas as pd
 import logging
 from datetime import datetime
+import json
 from urllib.parse import urljoin
+import io
 
-# Configuração de logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+# Configurar logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# CONFIGURAÇÕES
+# Configurações
+BASE_URL = "https://app.uff.br"
+APLICACAO_URL = "https://app.uff.br/graduacao/administracaoacademica"
 LOGIN_URL = "https://app.uff.br/auth/realms/master/protocol/openid-connect/auth"
-BASE_URL = "https://app.uff.br/graduacao/administracaoacademica"
-RELATORIOS_FOLDER = "relatorios_baixados"
-TIMEOUT_PROCESSAMENTO = 600  # 10 minutos
-INTERVALO_VERIFICACAO = 10  # 10 segundos
+TOKEN_URL = "https://app.uff.br/auth/realms/master/protocol/openid-connect/token"
+LISTAGEM_ALUNOS_URL = f"{APLICACAO_URL}/relatorios/listagens_alunos"
 
-# Mapeamento de cursos: nome_exibição -> (nome_form, código)
-CURSOS = {
-    'Química (Licenciatura) (12700)': {
-        'nome_display': 'Licenciatura',
-        'codigo_form': '12700'
+# Mapeamento de Desdobramentos (Ajuste para filtros corretos)
+DESDOBRAMENTOS_CURSOS = {
+    'Licenciatura': {
+        'valor': 'Química (Licenciatura) (12700)',
+        'buscar_por': 'Química',
+        'nome_padrao': 'Química (Licenciatura)'
     },
-    'Química (Bacharelado) (312700)': {
-        'nome_display': 'Bacharelado',
-        'codigo_form': '312700'
+    'Bacharelado': {
+        'valor': 'Química (Bacharelado) (312700)',
+        'buscar_por': 'Química',
+        'nome_padrao': 'Química (Bacharelado)'
     },
-    'Química Industrial (12709)': {
-        'nome_display': 'Industrial',
-        'codigo_form': '12709'
+    'Industrial': {
+        'valor': 'Química Industrial (12709)',
+        'buscar_por': 'Química Industrial',
+        'nome_padrao': 'Química Industrial'
     }
 }
 
-# Mapeamento de formas de ingresso
+# Formas de ingresso
 FORMAS_INGRESSO = {
-    1: "SISU 1ª Edição",    # 1º semestre
-    2: "SISU 2ª Edição"     # 2º semestre
+    '1': 'SISU 1ª Edição',
+    '2': 'SISU 2ª Edição'
 }
 
-
-class AutomadorRelatorios:
-    """Automatiza a geração de relatórios no sistema UFF"""
+class LoginUFF:
+    """Classe para fazer login via CPF e Senha"""
     
-    def __init__(self, email, senha):
-        self.email = email
-        self.senha = senha
+    def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
         })
-        
-    def fazer_login(self):
-        """Realiza login no sistema"""
-        logger.info(f"Iniciando login com email: {self.email}")
-        
-        try:
-            # Essa parte já estava funcionando no seu código original
-            # Mantendo a lógica que você tinha
-            response = self.session.get(BASE_URL, timeout=30)
-            response.raise_for_status()
-            
-            logger.info("Login realizado com sucesso!")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Erro ao fazer login: {str(e)}")
-            return False
     
-    def gerar_relatorio_periodo(self, ano, semestre, curso_nome, curso_codigo):
-        """
-        Gera um relatório para um período específico e um curso
-        
-        Args:
-            ano: Ano (ex: 2025)
-            semestre: Semestre (1 ou 2)
-            curso_nome: Nome do curso para exibição
-            curso_codigo: Código do curso no sistema
-            
-        Returns:
-            ID do relatório gerado ou None
-        """
-        periodo = f"{ano}/{semestre}°"
-        forma_ingresso = FORMAS_INGRESSO[semestre]
-        
-        logger.info(f"Gerando relatório: {curso_nome} - Período {periodo}")
-        
+    def fazer_login(self, cpf: str, senha: str) -> bool:
+        """Faz login no portal UFF usando CPF e Senha"""
         try:
-            # Navegar até a página de geração de relatórios
-            url = f"{BASE_URL}/relatorios/listagens_alunos/new"
-            response = self.session.get(url, timeout=30)
-            response.raise_for_status()
+            st.info("Conectando ao portal UFF...")
             
+            # 1. Acessar página de login
+            response = self.session.get(LOGIN_URL, timeout=10)
+            
+            # 2. Extrair parâmetros de autenticação
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Extrair token CSRF
-            csrf_token = soup.find('meta', {'name': 'csrf-token'})
-            if not csrf_token:
-                logger.warning("Token CSRF não encontrado")
-                return None
-            
-            token = csrf_token.get('content')
-            
-            # Dados do formulário para submissão
-            dados_formulario = {
-                'authenticity_token': token,
-                'listagem_alunos[localidade_id]': '8',  # Niterói
-                'listagem_alunos[curso_id]': '',  # Será preenchido
-                'listagem_alunos[desdobramento_id]': curso_codigo,  # Desdobramento específico
-                'listagem_alunos[forma_ingresso_id]': forma_ingresso,  # Forma de ingresso
-                'listagem_alunos[ano_semestre_ingresso]': periodo,  # Período
-                'commit': 'Gerar relatório em xlsx'
+            # Preparar dados de login (CPF e Senha)
+            login_data = {
+                'username': cpf,
+                'password': senha,
+                'login': 'Log In'
             }
             
-            # IMPORTANTE: Corrigir seleção de curso
-            if 'Industrial' in curso_nome:
-                dados_formulario['listagem_alunos[curso_id]'] = '13'  # Química Industrial
-            else:
-                dados_formulario['listagem_alunos[curso_id]'] = '1'   # Química
-            
-            logger.info(f"Parâmetros: {dados_formulario}")
-            
-            # Submeter formulário
+            # 3. Submeter credenciais
             response = self.session.post(
-                f"{BASE_URL}/relatorios/listagens_alunos",
+                LOGIN_URL,
+                data=login_data,
+                timeout=10,
+                allow_redirects=True
+            )
+            
+            # 4. Verificar se login foi bem-sucedido
+            if 'administracaoacademica' in response.url or response.status_code == 200:
+                st.success("Login realizado com sucesso!")
+                logger.info(f"Login bem-sucedido para CPF: {cpf}")
+                return True
+            else:
+                st.error("Falha ao fazer login. Verifique CPF e senha.")
+                logger.error("Falha na autenticação")
+                return False
+                
+        except Exception as e:
+            st.error(f"Erro ao fazer login: {str(e)}")
+            logger.error(f"Erro no login: {str(e)}")
+            return False
+    
+    def get_session(self):
+        """Retorna a sessão autenticada"""
+        return self.session
+
+
+class GeradorRelatorios:
+    """Classe para gerar relatórios com filtros corretos"""
+    
+    def __init__(self, session):
+        self.session = session
+        self.base_url = APLICACAO_URL
+    
+    def acessar_pagina_listagem(self):
+        """Acessa a página de listagem de alunos"""
+        try:
+            response = self.session.get(LISTAGEM_ALUNOS_URL, timeout=10)
+            response.raise_for_status()
+            return BeautifulSoup(response.text, 'html.parser')
+        except Exception as e:
+            logger.error(f"Erro ao acessar página de listagem: {str(e)}")
+            raise
+    
+    def extrair_parametros_formulario(self, soup):
+        """Extrai parâmetros do formulário"""
+        parametros = {
+            'inputs': {},
+            'selects': {},
+            'action': None,
+            'authenticity_token': None
+        }
+        
+        # Encontrar o formulário
+        form = soup.find('form')
+        if not form:
+            raise Exception("Formulário não encontrado")
+        
+        # Ação do formulário
+        parametros['action'] = form.get('action', '')
+        
+        # Extrair inputs
+        for input_tag in form.find_all('input'):
+            name = input_tag.get('name', '')
+            value = input_tag.get('value', '')
+            
+            if name == 'authenticity_token':
+                parametros['authenticity_token'] = value
+            
+            if name:
+                parametros['inputs'][name] = {'value': value, 'type': input_tag.get('type', 'text')}
+        
+        # Extrair selects
+        for select_tag in form.find_all('select'):
+            name = select_tag.get('name', '')
+            if name:
+                options = []
+                for option in select_tag.find_all('option'):
+                    options.append({
+                        'value': option.get('value', ''),
+                        'text': option.get_text(strip=True),
+                        'selected': 'selected' in option.attrs
+                    })
+                parametros['selects'][name] = options
+        
+        return parametros
+    
+    def preencher_formulario_com_filtros(self, parametros, filtros):
+        """Preenche o formulário com filtros específicos"""
+        dados_formulario = {}
+        
+        # Adicionar token CSRF
+        if parametros.get('authenticity_token'):
+            dados_formulario['authenticity_token'] = parametros['authenticity_token']
+        
+        # Adicionar valores padrão dos inputs
+        for name, input_info in parametros['inputs'].items():
+            if input_info['value']:
+                dados_formulario[name] = input_info['value']
+        
+        # Aplicar filtros com busca específica
+        for campo, valor_buscado in filtros.items():
+            if campo in parametros['selects']:
+                opcoes = parametros['selects'][campo]
+                valor_encontrado = False
+                
+                for opcao in opcoes:
+                    # Busca exata ou parcial
+                    if str(opcao['value']).strip() == str(valor_buscado).strip():
+                        dados_formulario[campo] = opcao['value']
+                        logger.info(f"Filtro exato: {campo} = {valor_buscado} (valor: {opcao['value']})")
+                        valor_encontrado = True
+                        break
+                    elif opcao['text'].strip() == str(valor_buscado).strip():
+                        dados_formulario[campo] = opcao['value']
+                        logger.info(f"Filtro por texto: {campo} = {valor_buscado} (valor: {opcao['value']})")
+                        valor_encontrado = True
+                        break
+                
+                if not valor_encontrado:
+                    # Busca parcial para desdobramentos
+                    for opcao in opcoes:
+                        if valor_buscado in opcao['text']:
+                            dados_formulario[campo] = opcao['value']
+                            logger.info(f"Filtro parcial: {campo} = {valor_buscado} encontrado em {opcao['text']} (valor: {opcao['value']})")
+                            valor_encontrado = True
+                            break
+                
+                if not valor_encontrado:
+                    logger.warning(f"Filtro não encontrado: {campo} = {valor_buscado}")
+                    logger.warning(f"Opções disponíveis: {[o['text'] for o in opcoes]}")
+        
+        return dados_formulario
+    
+    def submeter_formulario(self, dados_formulario):
+        """Submete o formulário e obtém o ID do relatório"""
+        try:
+            action_url = urljoin(self.base_url, '/graduacao/administracaoacademica/relatorios/listagens_alunos')
+            
+            logger.info(f"Submetendo formulário para: {action_url}")
+            
+            response = self.session.post(
+                action_url,
                 data=dados_formulario,
                 timeout=30,
                 allow_redirects=True
             )
             response.raise_for_status()
             
-            # Extrair ID do relatório da resposta
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # O ID está na URL ou em algum elemento da página
-            relatorio_id = self._extrair_id_relatorio(soup, response.url)
-            
-            if relatorio_id:
-                logger.info(f"✅ Relatório gerado com ID: {relatorio_id}")
-                return relatorio_id
+            # Extrair ID do relatório da URL
+            match = re.search(r'/relatorios/(\d+)', response.url)
+            if match:
+                relatorio_id = match.group(1)
+                logger.info(f"Relatório criado com ID: {relatorio_id}")
+                return {
+                    'success': True,
+                    'relatorio_id': relatorio_id,
+                    'url': response.url
+                }
             else:
-                logger.warning("Não foi possível extrair ID do relatório")
-                return None
-                
+                logger.error("Não foi possível extrair o ID do relatório")
+                return {'success': False, 'error': 'ID do relatório não encontrado'}
+            
         except Exception as e:
-            logger.error(f"Erro ao gerar relatório: {str(e)}")
-            return None
+            logger.error(f"Erro ao submeter formulário: {str(e)}")
+            return {'success': False, 'error': str(e)}
     
-    def _extrair_id_relatorio(self, soup, url):
-        """Extrai o ID do relatório da resposta"""
-        
-        # Tentar extrair da URL
-        if '/relatorios/' in url:
-            parts = url.split('/relatorios/')
-            if len(parts) > 1:
-                relatorio_id = parts[1].split('/')[0].split('?')[0]
-                if relatorio_id.isdigit():
-                    return relatorio_id
-        
-        # Tentar extrair de elemento da página
-        relatorio_link = soup.find('a', string=lambda s: s and 'Relatório' in s)
-        if relatorio_link and 'href' in relatorio_link.attrs:
-            url_link = relatorio_link['href']
-            if '/relatorios/' in url_link:
-                return url_link.split('/relatorios/')[-1].split('/')[0]
-        
-        return None
-    
-    def aguardar_relatorio_pronto(self, relatorio_id):
-        """
-        Aguarda até que o relatório esteja pronto para download
-        
-        Args:
-            relatorio_id: ID do relatório a monitorar
-            
-        Returns:
-            URL de download ou None
-        """
-        logger.info(f"Aguardando conclusão do relatório {relatorio_id}...")
-        
-        tempo_inicio = time.time()
-        tentativa = 0
-        
-        while time.time() - tempo_inicio < TIMEOUT_PROCESSAMENTO:
-            tentativa += 1
-            
-            try:
-                url_status = f"{BASE_URL}/relatorios/{relatorio_id}"
-                response = self.session.get(url_status, timeout=30)
-                response.raise_for_status()
-                
-                soup = BeautifulSoup(response.text, 'html.parser')
-                
-                # Procurar por link de download
-                link_download = self._encontrar_link_download(soup)
-                
-                if link_download:
-                    logger.info(f"✅ Relatório pronto! Link de download encontrado")
-                    return link_download
-                
-                # Verificar status do processamento
-                status_text = soup.get_text()
-                if 'Processado' in status_text or 'Concluído' in status_text:
-                    logger.info(f"Processamento concluído. Tentativa {tentativa}")
-                    time.sleep(5)  # Aguardar um pouco mais
-                    continue
-                
-                elapsed = int(time.time() - tempo_inicio)
-                logger.info(f"Processando... ({elapsed}s / {TIMEOUT_PROCESSAMENTO}s)")
-                
-                time.sleep(INTERVALO_VERIFICACAO)
-                
-            except Exception as e:
-                logger.warning(f"Erro ao verificar status: {str(e)}")
-                time.sleep(INTERVALO_VERIFICACAO)
-        
-        logger.error(f"Timeout ao aguardar relatório {relatorio_id}")
-        return None
-    
-    def _encontrar_link_download(self, soup):
-        """Encontra o link de download na página de status"""
-        
-        # Procurar por links que contenham xlsx
-        for link in soup.find_all('a'):
-            href = link.get('href', '')
-            texto = link.get_text(strip=True).lower()
-            
-            if 'download' in texto or '.xlsx' in href:
-                if not href.startswith('http'):
-                    href = urljoin(BASE_URL, href)
-                return href
-        
-        return None
-    
-    def baixar_relatorio(self, link_download, nome_arquivo):
-        """
-        Baixa o arquivo do relatório
-        
-        Args:
-            link_download: URL do arquivo para download
-            nome_arquivo: Nome para salvar o arquivo
-            
-        Returns:
-            Caminho do arquivo baixado ou None
-        """
-        os.makedirs(RELATORIOS_FOLDER, exist_ok=True)
-        
-        caminho_completo = os.path.join(RELATORIOS_FOLDER, nome_arquivo)
-        
-        logger.info(f"Baixando relatório: {nome_arquivo}")
-        
+    def verificar_status_relatorio(self, relatorio_id):
+        """Verifica o status do relatório"""
         try:
-            response = self.session.get(link_download, timeout=60)
+            url = f"{self.base_url}/relatorios/{relatorio_id}"
+            response = self.session.get(url, timeout=10)
             response.raise_for_status()
             
-            with open(caminho_completo, 'wb') as f:
-                f.write(response.content)
+            soup = BeautifulSoup(response.text, 'html.parser')
             
-            tamanho_mb = os.path.getsize(caminho_completo) / (1024 * 1024)
-            logger.info(f"✅ Arquivo salvo: {caminho_completo} ({tamanho_mb:.2f} MB)")
+            # Procurar link de download
+            download_links = soup.find_all('a', {'href': re.compile(r'\.xlsx')})
             
-            return caminho_completo
+            if download_links:
+                return {
+                    'status': 'PRONTO',
+                    'download_url': urljoin(self.base_url, download_links[0].get('href', ''))
+                }
+            else:
+                # Verificar etapas de processamento
+                steps = soup.find_all('div', {'class': 'step'})
+                if steps:
+                    return {
+                        'status': 'EM_PROCESSAMENTO',
+                        'etapas': len(steps)
+                    }
+                else:
+                    return {'status': 'DESCONHECIDO'}
+        
+        except Exception as e:
+            logger.error(f"Erro ao verificar status: {str(e)}")
+            return {'status': 'ERRO', 'error': str(e)}
+    
+    def aguardar_relatorio(self, relatorio_id, max_tentativas=60):
+        """Aguarda o relatório ficar pronto"""
+        tentativa = 0
+        while tentativa < max_tentativas:
+            status_info = self.verificar_status_relatorio(relatorio_id)
             
+            if status_info['status'] == 'PRONTO':
+                return status_info
+            elif status_info['status'] == 'ERRO':
+                raise Exception(f"Erro ao verificar status: {status_info.get('error')}")
+            
+            tentativa += 1
+            time.sleep(5)  # Aguardar 5 segundos
+        
+        raise Exception(f"Timeout aguardando relatório {relatorio_id}")
+    
+    def baixar_relatorio(self, download_url):
+        """Baixa o arquivo Excel do relatório"""
+        try:
+            response = self.session.get(download_url, timeout=30)
+            response.raise_for_status()
+            return response.content
         except Exception as e:
             logger.error(f"Erro ao baixar relatório: {str(e)}")
-            return None
+            raise
     
-    def executar_completo(self, ano_inicio, semestre_inicio, ano_fim, semestre_fim):
-        """
-        Executa o fluxo completo: gera relatórios para todos os períodos e cursos
-        
-        Args:
-            ano_inicio, semestre_inicio: Período inicial
-            ano_fim, semestre_fim: Período final
-        """
-        
-        # Fazer login
-        if not self.fazer_login():
-            logger.error("Falha no login. Abortando.")
-            return []
-        
-        # Gerar lista de períodos
-        periodos = self._gerar_periodos(ano_inicio, semestre_inicio, ano_fim, semestre_fim)
-        logger.info(f"Períodos a processar: {periodos}")
-        
-        # Lista para armazenar caminhos dos arquivos baixados
-        arquivos_baixados = []
-        
-        # Para cada período
-        for ano, semestre in periodos:
-            logger.info(f"\n{'='*60}")
-            logger.info(f"Processando período: {ano}/{semestre}°")
-            logger.info(f"{'='*60}")
+    def gerar_relatorio_completo(self, filtros, progress_callback=None):
+        """Fluxo completo para gerar um relatório"""
+        try:
+            # 1. Acessar página
+            if progress_callback:
+                progress_callback("Acessando página de listagem...", 10)
+            soup = self.acessar_pagina_listagem()
             
-            # Para cada curso
-            for curso_nome, curso_info in CURSOS.items():
-                try:
-                    # Gerar relatório
-                    relatorio_id = self.gerar_relatorio_periodo(
-                        ano, 
-                        semestre, 
-                        curso_info['nome_display'],
-                        curso_info['codigo_form']
-                    )
-                    
-                    if not relatorio_id:
-                        logger.warning(f"Falha ao gerar relatório para {curso_nome}")
-                        continue
-                    
-                    # Aguardar conclusão
-                    link_download = self.aguardar_relatorio_pronto(relatorio_id)
-                    
-                    if not link_download:
-                        logger.warning(f"Timeout ao processar {curso_nome}")
-                        continue
-                    
-                    # Baixar arquivo
-                    nome_arquivo = f"relatorio_{ano}_{semestre}_{curso_info['nome_display']}.xlsx"
-                    caminho = self.baixar_relatorio(link_download, nome_arquivo)
-                    
-                    if caminho:
-                        arquivos_baixados.append(caminho)
-                    
-                    # Aguardar um pouco entre requisições
-                    time.sleep(5)
-                    
-                except Exception as e:
-                    logger.error(f"Erro ao processar {curso_nome}: {str(e)}")
-                    continue
-        
-        logger.info(f"\n{'='*60}")
-        logger.info(f"✅ PROCESSO COMPLETO!")
-        logger.info(f"Total de arquivos baixados: {len(arquivos_baixados)}")
-        logger.info(f"{'='*60}\n")
-        
-        return arquivos_baixados
-    
-    def _gerar_periodos(self, ano_inicio, semestre_inicio, ano_fim, semestre_fim):
-        """Gera lista de períodos (ano, semestre) entre as datas"""
-        periodos = []
-        
-        ano_atual = ano_inicio
-        sem_atual = semestre_inicio
-        
-        while (ano_atual, sem_atual) <= (ano_fim, semestre_fim):
-            periodos.append((ano_atual, sem_atual))
+            # 2. Extrair parâmetros
+            if progress_callback:
+                progress_callback("Extraindo parâmetros do formulário...", 20)
+            parametros = self.extrair_parametros_formulario(soup)
             
-            if sem_atual == 1:
-                sem_atual = 2
-            else:
-                sem_atual = 1
-                ano_atual += 1
+            # 3. Preencher com filtros corretos
+            if progress_callback:
+                progress_callback("Preenchendo formulário com filtros...", 30)
+            dados_form = self.preencher_formulario_com_filtros(parametros, filtros)
+            
+            # 4. Submeter formulário
+            if progress_callback:
+                progress_callback("Submetendo formulário...", 40)
+            resultado = self.submeter_formulario(dados_form)
+            
+            if not resultado['success']:
+                raise Exception(f"Erro ao submeter formulário: {resultado.get('error')}")
+            
+            relatorio_id = resultado['relatorio_id']
+            
+            # 5. Aguardar processamento
+            if progress_callback:
+                progress_callback(f"Aguardando processamento do relatório {relatorio_id}...", 50)
+            status_info = self.aguardar_relatorio(relatorio_id)
+            
+            # 6. Baixar arquivo
+            if progress_callback:
+                progress_callback("Baixando arquivo...", 80)
+            conteudo_excel = self.baixar_relatorio(status_info['download_url'])
+            
+            if progress_callback:
+                progress_callback("Relatório gerado com sucesso!", 100)
+            
+            return conteudo_excel
         
-        return periodos
+        except Exception as e:
+            logger.error(f"Erro no fluxo completo: {str(e)}")
+            raise
 
 
-# FUNÇÃO PRINCIPAL
 def main():
-    """Executa o programa principal"""
+    """Função principal da aplicação"""
+    st.set_page_config(page_title="Automador de Relatórios UFF - Química", layout="wide")
     
-    print("\n" + "="*60)
-    print("AUTOMADOR DE RELATÓRIOS - UFF QUÍMICA")
-    print("="*60)
+    st.title("🎓 Automador de Relatórios de Evasão - UFF Química")
+    st.markdown("---")
     
-    # Solicitar credenciais
-    email = input("\nDigite seu email UFF: ").strip()
-    senha = input("Digite sua senha: ").strip()
+    # Sidebar para login
+    with st.sidebar:
+        st.header("Login")
+        
+        if 'session' not in st.session_state:
+            st.session_state.session = None
+        
+        if st.session_state.session is None:
+            cpf = st.text_input("CPF:", type="password", help="Digite seu CPF sem pontuação")
+            senha = st.text_input("Senha:", type="password")
+            
+            if st.button("Entrar", use_container_width=True):
+                with st.spinner("Autenticando..."):
+                    login = LoginUFF()
+                    if login.fazer_login(cpf, senha):
+                        st.session_state.session = login.get_session()
+                        st.rerun()
+        else:
+            st.success("✓ Conectado ao portal UFF")
+            if st.button("Sair", use_container_width=True):
+                st.session_state.session = None
+                st.rerun()
     
-    # Solicitar período
-    print("\nDigite o período inicial (ex: 2025 1 para 2025.1):")
-    ano_inicio = int(input("  Ano: "))
-    semestre_inicio = int(input("  Semestre (1 ou 2): "))
-    
-    print("\nDigite o período final (ex: 2026 1 para 2026.1):")
-    ano_fim = int(input("  Ano: "))
-    semestre_fim = int(input("  Semestre (1 ou 2): "))
-    
-    # Criar automador e executar
-    automador = AutomadorRelatorios(email, senha)
-    arquivos = automador.executar_completo(ano_inicio, semestre_inicio, ano_fim, semestre_fim)
-    
-    # Salvar lista de arquivos para uso no próximo script
-    with open('arquivos_relatorios.txt', 'w') as f:
-        for arquivo in arquivos:
-            f.write(arquivo + '\n')
-    
-    logger.info(f"Lista de arquivos salva em: arquivos_relatorios.txt")
-    print("\n✅ Execute agora: python 2_processar_dados.py")
+    # Conteúdo principal
+    if st.session_state.session is None:
+        st.info("👉 Faça login no portal UFF usando seu CPF e senha para começar.")
+    else:
+        # Área de seleção de parâmetros
+        st.header("Configuração de Consulta")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            periodo_inicio = st.selectbox(
+                "Período de Início",
+                options=['2025.1', '2025.2', '2026.1', '2026.2'],
+                index=0
+            )
+        
+        with col2:
+            periodo_fim = st.selectbox(
+                "Período de Fim",
+                options=['2025.1', '2025.2', '2026.1', '2026.2'],
+                index=2
+            )
+        
+        with col3:
+            cursos_selecionados = st.multiselect(
+                "Cursos (padrão: todos)",
+                options=list(DESDOBRAMENTOS_CURSOS.keys()),
+                default=list(DESDOBRAMENTOS_CURSOS.keys())
+            )
+        
+        st.markdown("---")
+        
+        if st.button("Gerar Relatórios e Planilha Consolidada", use_container_width=True, type="primary"):
+            
+            # Converter períodos para o formato do sistema (2025/1, 2025/2, etc)
+            def converter_periodo(periodo):
+                ano, semestre = periodo.split('.')
+                return f"{ano}/{semestre}°"
+            
+            # Gerar períodos
+            periodo_inicio_fmt = converter_periodo(periodo_inicio)
+            periodo_fim_fmt = converter_periodo(periodo_fim)
+            
+            # Extrair períodos entre início e fim
+            periodos = [periodo_inicio_fmt, periodo_fim_fmt]
+            # Adicionar períodos intermediários se necessário
+            
+            gerador = GeradorRelatorios(st.session_state.session)
+            
+            # Armazenar todos os dados
+            todos_dados = []
+            
+            # Barra de progresso
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            total_relatorios = len(periodos) * len(cursos_selecionados)
+            relatorio_atual = 0
+            
+            try:
+                for periodo in periodos:
+                    # Determinar forma de ingresso
+                    semestre = '1' if '1°' in periodo else '2'
+                    forma_ingresso = FORMAS_INGRESSO[semestre]
+                    
+                    for curso_key in cursos_selecionados:
+                        relatorio_atual += 1
+                        progresso = relatorio_atual / total_relatorios
+                        
+                        curso_info = DESDOBRAMENTOS_CURSOS[curso_key]
+                        
+                        def callback_progresso(msg, pct):
+                            status_text.text(f"[{relatorio_atual}/{total_relatorios}] {curso_key} - {periodo}: {msg}")
+                            progress_bar.progress(progresso * 0.5 + pct * 0.5 / 100)
+                        
+                        try:
+                            status_text.text(f"Gerando relatório: {curso_key} - {periodo}...")
+                            
+                            # Preparar filtros
+                            filtros = {
+                                'report_filter_localidade': 'Niterói',
+                                'report_filter_curso': curso_info['buscar_por'],
+                                'report_filter_desdobramento': curso_info['valor'],
+                                'report_filter_forma_ingresso': forma_ingresso,
+                                'report_filter_ano_semestre_ingresso': periodo
+                            }
+                            
+                            # Gerar relatório
+                            conteudo_excel = gerador.gerar_relatorio_completo(filtros, callback_progresso)
+                            
+                            # Ler dados do Excel
+                            df = pd.read_excel(io.BytesIO(conteudo_excel))
+                            df['curso'] = curso_key
+                            df['periodo'] = periodo
+                            todos_dados.append(df)
+                            
+                            status_text.text(f"✓ Relatório gerado: {curso_key} - {periodo}")
+                            
+                        except Exception as e:
+                            st.error(f"Erro ao gerar relatório de {curso_key} ({periodo}): {str(e)}")
+                            logger.error(f"Erro: {str(e)}")
+                
+                if todos_dados:
+                    status_text.text("Processando dados e gerando planilha consolidada...")
+                    
+                    # Combinar todos os dados
+                    df_consolidado = pd.concat(todos_dados, ignore_index=True)
+                    
+                    # Gerar arquivo Excel consolidado
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        df_consolidado.to_excel(writer, sheet_name='Dados Brutos', index=False)
+                    
+                    output.seek(0)
+                    
+                    # Botão de download
+                    st.success("✓ Planilha consolidada gerada com sucesso!")
+                    st.download_button(
+                        label="📥 Baixar Planilha Consolidada",
+                        data=output.getvalue(),
+                        file_name=f"planilha_consolidada_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
+                
+                progress_bar.progress(1.0)
+                status_text.text("✓ Processo concluído!")
+            
+            except Exception as e:
+                st.error(f"Erro geral: {str(e)}")
+                logger.error(f"Erro: {str(e)}")
 
 
 if __name__ == "__main__":
