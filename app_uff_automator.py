@@ -1,6 +1,6 @@
 """
 Automador de Relatórios - UFF Química
-Versão: Análise completa e seleção manual de valores
+Versão: Com tratamento de selects dependentes e formato correto
 """
 
 import streamlit as st
@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 import pandas as pd
 import logging
 from datetime import datetime
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlencode
 import io
 import json
 
@@ -106,326 +106,286 @@ class LoginUFF:
         return self.session if self.is_authenticated else None
 
 
-class AnalisadorFormulario:
-    """Analisa completamente o formulário de relatórios"""
+class SistemaRelatorios:
+    """Classe principal para lidar com o sistema de relatórios"""
     
     def __init__(self, session):
         self.session = session
+        self.url_listagem = f"{APLICACAO_URL}/relatorios/listagens_alunos"
+        self.token = None
+        self.dados_formulario = {}
     
-    def analisar_formulario_completo(self):
-        """Analisa todos os campos do formulário"""
+    def carregar_pagina_inicial(self):
+        """Carrega a página inicial e extrai o token"""
         try:
-            url = f"{APLICACAO_URL}/relatorios/listagens_alunos"
-            logger.info(f"Acessando página: {url}")
-            
-            response = self.session.get(url, timeout=15)
+            response = self.session.get(self.url_listagem, timeout=15)
             response.raise_for_status()
             
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Encontrar todos os formulários
-            forms = soup.find_all('form')
-            logger.info(f"Total de formulários encontrados: {len(forms)}")
-            
-            # Procurar formulário principal de relatórios
-            form_principal = None
-            for form in forms:
-                action = form.get('action', '').lower()
-                if 'listagens_alunos' in action or 'relatorios' in action:
-                    form_principal = form
-                    break
-            
-            if not form_principal and forms:
-                form_principal = forms[0]
-            
-            if not form_principal:
-                raise Exception("Nenhum formulário encontrado")
-            
             # Extrair token CSRF
-            token = None
-            for input_tag in form_principal.find_all('input'):
-                if input_tag.get('name') == 'authenticity_token':
-                    token = input_tag.get('value', '')
-                    break
+            token_input = soup.find('input', {'name': 'authenticity_token'})
+            if token_input:
+                self.token = token_input.get('value', '')
+                logger.info(f"Token obtido: {self.token[:20]}...")
             
-            # Analisar todos os campos
-            analise = {
-                'token': token,
-                'action': form_principal.get('action', ''),
-                'method': form_principal.get('method', 'post').upper(),
-                'campos': {}
-            }
+            # Extrair todos os dados do formulário
+            self.extrair_dados_formulario(soup)
             
-            # Analisar todos os selects
-            for select in form_principal.find_all('select'):
-                nome = select.get('name', '')
-                if nome:
-                    opcoes = []
-                    for option in select.find_all('option'):
-                        opcoes.append({
-                            'valor': option.get('value', ''),
-                            'texto': option.get_text(strip=True),
-                            'selecionado': 'selected' in option.attrs
-                        })
-                    
-                    analise['campos'][nome] = {
-                        'tipo': 'select',
-                        'opcoes': opcoes,
-                        'id': select.get('id', ''),
-                        'required': 'required' in select.attrs
-                    }
-            
-            # Analisar todos os inputs
-            for input_tag in form_principal.find_all('input'):
-                nome = input_tag.get('name', '')
-                if nome:
-                    analise['campos'][nome] = {
-                        'tipo': input_tag.get('type', 'text'),
-                        'valor': input_tag.get('value', ''),
-                        'id': input_tag.get('id', ''),
-                        'required': 'required' in input_tag.attrs
-                    }
-            
-            # Analisar textareas
-            for textarea in form_principal.find_all('textarea'):
-                nome = textarea.get('name', '')
-                if nome:
-                    analise['campos'][nome] = {
-                        'tipo': 'textarea',
-                        'valor': textarea.get_text(strip=True),
-                        'id': textarea.get('id', ''),
-                        'required': 'required' in textarea.attrs
-                    }
-            
-            # Analisar botões
-            botoes = []
-            for button in form_principal.find_all('button'):
-                botoes.append({
-                    'nome': button.get('name', ''),
-                    'valor': button.get('value', ''),
-                    'texto': button.get_text(strip=True),
-                    'tipo': button.get('type', 'submit')
-                })
-            
-            for input_tag in form_principal.find_all('input', type=['submit', 'button']):
-                botoes.append({
-                    'nome': input_tag.get('name', ''),
-                    'valor': input_tag.get('value', ''),
-                    'texto': input_tag.get('value', ''),
-                    'tipo': input_tag.get('type', 'submit')
-                })
-            
-            analise['botoes'] = botoes
-            
-            return analise
+            return True
             
         except Exception as e:
-            logger.error(f"Erro ao analisar formulário: {e}")
-            raise
-
-
-class GeradorRelatorios:
-    """Gera relatórios com base na análise do formulário"""
+            logger.error(f"Erro ao carregar página: {e}")
+            return False
     
-    def __init__(self, session):
-        self.session = session
-        self.analisador = AnalisadorFormulario(session)
+    def extrair_dados_formulario(self, soup):
+        """Extrai todos os dados do formulário"""
+        form = soup.find('form')
+        if not form:
+            return
+        
+        # Extrair todos os campos
+        self.dados_formulario = {
+            'token': self.token,
+            'action': form.get('action', ''),
+            'method': form.get('method', 'post').upper(),
+            'campos': {}
+        }
+        
+        # Extrair inputs
+        for input_tag in form.find_all('input'):
+            name = input_tag.get('name')
+            if name:
+                self.dados_formulario['campos'][name] = {
+                    'tipo': input_tag.get('type', 'text'),
+                    'valor': input_tag.get('value', ''),
+                    'id': input_tag.get('id', '')
+                }
+        
+        # Extrair selects
+        for select_tag in form.find_all('select'):
+            name = select_tag.get('name')
+            if name:
+                opcoes = []
+                for option in select_tag.find_all('option'):
+                    opcoes.append({
+                        'valor': option.get('value', ''),
+                        'texto': option.get_text(strip=True),
+                        'selecionado': 'selected' in option.attrs
+                    })
+                
+                self.dados_formulario['campos'][name] = {
+                    'tipo': 'select',
+                    'opcoes': opcoes,
+                    'id': select_tag.get('id', '')
+                }
     
-    def gerar_relatorio_com_valores(self, valores_selecionados):
-        """Gera relatório com os valores selecionados"""
+    def obter_cursos_para_localidade(self, id_localidade):
+        """Obtém cursos disponíveis para uma localidade específica"""
         try:
-            # 1. Primeiro analisar o formulário para obter o token atual
-            st.info("📋 Analisando formulário...")
-            analise = self.analisador.analisar_formulario_completo()
+            if not self.token:
+                self.carregar_pagina_inicial()
             
-            if not analise['token']:
-                raise Exception("Token CSRF não encontrado")
-            
-            # 2. Preparar dados para envio
+            # Primeiro, enviar a seleção de localidade
             dados = {
-                'authenticity_token': analise['token']
+                'authenticity_token': self.token,
+                'idlocalidade': id_localidade,
+                'utf8': '✓'
             }
             
-            # 3. Adicionar todos os valores selecionados
-            for campo, valor in valores_selecionados.items():
-                if valor:  # Só adicionar se tiver valor
-                    dados[campo] = valor
+            # Verificar se há outros campos hidden que precisam ser enviados
+            for campo_nome, campo_info in self.dados_formulario['campos'].items():
+                if campo_info['tipo'] == 'hidden' and campo_info['valor']:
+                    dados[campo_nome] = campo_info['valor']
             
-            # 4. Adicionar botão submit (geralmente é 'commit')
-            # Procurar botão submit no formulário
-            botao_submit = None
-            for botao in analise['botoes']:
-                if botao['tipo'] == 'submit':
-                    botao_submit = botao
-                    break
+            logger.info(f"Enviando seleção de localidade {id_localidade}...")
             
-            if botao_submit and botao_submit['nome']:
-                dados[botao_submit['nome']] = botao_submit['valor'] or 'Gerar Relatório'
-            else:
-                dados['commit'] = 'Gerar Relatório'  # Fallback
+            response = self.session.post(
+                self.url_listagem,
+                data=dados,
+                timeout=15,
+                headers={
+                    'Referer': self.url_listagem,
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'X-Requested-With': 'XMLHttpRequest'  # Importante para AJAX
+                }
+            )
             
-            logger.info(f"Enviando {len(dados)} campos")
+            # Analisar resposta
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Procurar select de cursos
+            select_curso = soup.find('select', {'id': 'idcurso', 'name': 'idcurso'})
+            
+            cursos = {}
+            if select_curso:
+                for option in select_curso.find_all('option'):
+                    valor = option.get('value', '').strip()
+                    texto = option.get_text(strip=True)
+                    if valor:  # Ignorar opções vazias
+                        cursos[valor] = texto
+            
+            logger.info(f"Encontrados {len(cursos)} cursos para localidade {id_localidade}")
+            
+            # Atualizar dados do formulário
+            if 'idcurso' in self.dados_formulario['campos']:
+                self.dados_formulario['campos']['idcurso']['opcoes'] = [
+                    {'valor': k, 'texto': v, 'selecionado': False} 
+                    for k, v in cursos.items()
+                ]
+            
+            return cursos
+            
+        except Exception as e:
+            logger.error(f"Erro ao obter cursos: {e}")
+            return {}
+    
+    def obter_desdobramentos_para_curso(self, id_localidade, id_curso):
+        """Obtém desdobramentos disponíveis para um curso específico"""
+        try:
+            if not self.token:
+                self.carregar_pagina_inicial()
+            
+            # Enviar seleção de curso
+            dados = {
+                'authenticity_token': self.token,
+                'idlocalidade': id_localidade,
+                'idcurso': id_curso,
+                'utf8': '✓'
+            }
+            
+            # Adicionar campos hidden
+            for campo_nome, campo_info in self.dados_formulario['campos'].items():
+                if campo_info['tipo'] == 'hidden' and campo_info['valor']:
+                    dados[campo_nome] = campo_info['valor']
+            
+            logger.info(f"Enviando seleção de curso {id_curso}...")
+            
+            response = self.session.post(
+                self.url_listagem,
+                data=dados,
+                timeout=15,
+                headers={
+                    'Referer': self.url_listagem,
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            )
+            
+            # Analisar resposta
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Procurar select de desdobramentos
+            select_desdobramento = soup.find('select', {'id': 'iddesdobramento', 'name': 'iddesdobramento'})
+            
+            desdobramentos = {}
+            if select_desdobramento:
+                for option in select_desdobramento.find_all('option'):
+                    valor = option.get('value', '').strip()
+                    texto = option.get_text(strip=True)
+                    if valor:  # Ignorar opções vazias
+                        desdobramentos[valor] = texto
+            
+            logger.info(f"Encontrados {len(desdobramentos)} desdobramentos para curso {id_curso}")
+            
+            # Atualizar dados do formulário
+            if 'iddesdobramento' in self.dados_formulario['campos']:
+                self.dados_formulario['campos']['iddesdobramento']['opcoes'] = [
+                    {'valor': k, 'texto': v, 'selecionado': False} 
+                    for k, v in desdobramentos.items()
+                ]
+            
+            return desdobramentos
+            
+        except Exception as e:
+            logger.error(f"Erro ao obter desdobramentos: {e}")
+            return {}
+    
+    def gerar_relatorio_excel(self, filtros):
+        """Gera relatório em formato Excel (XLSX)"""
+        try:
+            if not self.token:
+                self.carregar_pagina_inicial()
+            
+            # Preparar dados para envio
+            dados = {
+                'authenticity_token': self.token,
+                'utf8': '✓',
+                'format': 'xlsx'  # IMPORTANTE: Especificar formato Excel
+            }
+            
+            # Adicionar filtros
+            for campo, valor in filtros.items():
+                dados[campo] = valor
+            
+            logger.info(f"Gerando relatório Excel com {len(dados)} campos")
             logger.info(f"Campos: {list(dados.keys())}")
             
-            # 5. Construir URL completa
-            action_url = analise['action']
-            if not action_url.startswith('http'):
-                action_url = urljoin(APLICACAO_URL, action_url)
-            
-            # 6. Enviar requisição
-            st.info("🚀 Enviando formulário...")
+            # Enviar requisição
             response = self.session.post(
-                action_url,
+                self.url_listagem,
                 data=dados,
                 timeout=30,
                 allow_redirects=True,
                 headers={
-                    'Referer': f"{APLICACAO_URL}/relatorios/listagens_alunos",
-                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Referer': self.url_listagem,
+                    'Content-Type': 'application/x-www-form-urlencoded'
                 }
             )
             
             logger.info(f"Status: {response.status_code}")
             logger.info(f"URL após envio: {response.url}")
             
-            # 7. Verificar resultado
-            if response.status_code != 200:
-                logger.error(f"Erro {response.status_code}")
-                
-                # Salvar resposta de erro
-                with open('erro_detalhado.html', 'w', encoding='utf-8') as f:
-                    f.write(response.text)
-                
-                # Tentar extrair mensagem de erro
-                soup_erro = BeautifulSoup(response.text, 'html.parser')
-                
-                # Procurar várias classes de erro possíveis
-                classes_erro = ['error', 'alert-error', 'alert-danger', 'flash-error']
-                for classe in classes_erro:
-                    erros = soup_erro.find_all(class_=classe)
-                    for erro in erros:
-                        texto_erro = erro.get_text(strip=True)
-                        if texto_erro:
-                            raise Exception(f"Erro do sistema: {texto_erro}")
-                
-                raise Exception(f"Erro HTTP {response.status_code}")
+            # Verificar se foi redirecionado para página de relatório
+            if '/relatorios/' in response.url and response.status_code == 200:
+                # Extrair ID do relatório
+                match = re.search(r'/relatorios/(\d+)', response.url)
+                if match:
+                    relatorio_id = match.group(1)
+                    logger.info(f"✅ Relatório criado! ID: {relatorio_id}")
+                    return self.baixar_relatorio(relatorio_id)
             
-            # 8. Extrair ID do relatório
-            match = re.search(r'/relatorios/(\d+)', response.url)
-            if match:
-                relatorio_id = match.group(1)
-                st.info(f"✅ Relatório criado! ID: {relatorio_id}")
-                
-                # 9. Aguardar e baixar
-                return self.baixar_relatorio(relatorio_id)
-            else:
-                # Verificar se a página contém link para relatório
-                soup = BeautifulSoup(response.text, 'html.parser')
-                links_relatorio = soup.find_all('a', href=re.compile(r'/relatorios/\d+'))
-                
-                if links_relatorio:
-                    href = links_relatorio[0].get('href', '')
-                    match = re.search(r'/relatorios/(\d+)', href)
-                    if match:
-                        relatorio_id = match.group(1)
-                        st.info(f"✅ Relatório encontrado via link! ID: {relatorio_id}")
-                        return self.baixar_relatorio(relatorio_id)
-                
-                # Se não encontrou ID, verificar se há mensagem de sucesso
-                if 'relatório' in response.text.lower() and ('gerado' in response.text.lower() or 'criado' in response.text.lower()):
-                    # Talvez o relatório esteja em uma tabela ou lista
-                    st.warning("Relatório parece ter sido criado, mas ID não encontrado")
-                    
-                    # Procurar qualquer link que possa ser o relatório
-                    todos_links = soup.find_all('a')
-                    for link in todos_links:
-                        href = link.get('href', '')
-                        if '/relatorios/' in href:
-                            match = re.search(r'/relatorios/(\d+)', href)
-                            if match:
-                                relatorio_id = match.group(1)
-                                st.info(f"✅ Encontrado link alternativo! ID: {relatorio_id}")
-                                return self.baixar_relatorio(relatorio_id)
-                
-                raise Exception("Não foi possível encontrar o ID do relatório")
+            # Se não redirecionou, verificar se o arquivo foi retornado diretamente
+            content_type = response.headers.get('content-type', '').lower()
+            if 'excel' in content_type or 'xlsx' in content_type or 'spreadsheet' in content_type:
+                logger.info("✅ Arquivo Excel retornado diretamente")
+                return response.content
+            
+            # Se chegou aqui, algo deu errado
+            raise Exception("Não foi possível gerar o relatório")
             
         except Exception as e:
-            logger.error(f"Erro ao gerar relatório: {e}")
+            logger.error(f"Erro ao gerar relatório Excel: {e}")
             raise
     
     def baixar_relatorio(self, relatorio_id):
         """Aguarda e baixa o relatório"""
         try:
-            st.info(f"⏳ Aguardando processamento do relatório {relatorio_id}...")
+            logger.info(f"Aguardando relatório {relatorio_id}...")
             
             url_status = f"{BASE_URL}/relatorios/{relatorio_id}"
             
-            # Barra de progresso
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            # Tentar por até 2 minutos
+            # Tentar por 2 minutos
             for tentativa in range(40):
-                progresso = (tentativa + 1) / 40
-                progress_bar.progress(progresso)
-                status_text.text(f"Aguardando... ({tentativa + 1}/40)")
-                
                 response = self.session.get(url_status, timeout=10)
                 soup = BeautifulSoup(response.text, 'html.parser')
                 
                 # Procurar link de download Excel
-                download_links = []
-                
-                # Procurar por links .xlsx
                 for link in soup.find_all('a', href=True):
                     href = link.get('href', '')
                     if '.xlsx' in href.lower():
-                        download_links.append(href)
+                        download_url = urljoin(BASE_URL, href)
+                        logger.info(f"✅ Baixando de: {download_url}")
+                        
+                        file_response = self.session.get(download_url, timeout=30)
+                        file_response.raise_for_status()
+                        
+                        logger.info(f"✅ Download completo! {len(file_response.content)} bytes")
+                        return file_response.content
                 
-                if download_links:
-                    # Usar o primeiro link Excel encontrado
-                    download_url = urljoin(BASE_URL, download_links[0])
-                    st.info(f"✅ Relatório pronto! Baixando...")
-                    
-                    # Baixar arquivo
-                    file_response = self.session.get(download_url, timeout=30)
-                    file_response.raise_for_status()
-                    
-                    progress_bar.progress(1.0)
-                    status_text.text("✅ Download completo!")
-                    
-                    return file_response.content
-                
-                # Verificar se há mensagem de erro
-                if "erro" in response.text.lower():
-                    erros = soup.find_all(class_=lambda x: x and 'error' in x.lower())
-                    for erro in erros:
-                        texto = erro.get_text(strip=True)
-                        if texto:
-                            raise Exception(f"Erro no processamento: {texto}")
-                
-                # Verificar se está processando
-                texto_pagina = response.text.lower()
-                if "processando" in texto_pagina or "gerando" in texto_pagina:
-                    time.sleep(3)
-                    continue
-                elif "pronto" in texto_pagina or "disponível" in texto_pagina:
-                    # Talvez esteja pronto mas sem link explícito
-                    # Procurar por qualquer link que possa ser o download
-                    todos_links = soup.find_all('a')
-                    for link in todos_links:
-                        href = link.get('href', '')
-                        if any(ext in href.lower() for ext in ['.xls', '.xlsx', '.csv', '.pdf']):
-                            download_url = urljoin(BASE_URL, href)
-                            file_response = self.session.get(download_url, timeout=30)
-                            if file_response.status_code == 200:
-                                progress_bar.progress(1.0)
-                                status_text.text("✅ Download completo!")
-                                return file_response.content
-                
-                time.sleep(3)  # Aguardar 3 segundos entre tentativas
+                time.sleep(3)
             
-            raise Exception("Timeout: Relatório não ficou pronto em 2 minutos")
+            raise Exception("Timeout aguardando relatório")
             
         except Exception as e:
             logger.error(f"Erro ao baixar relatório: {e}")
@@ -446,8 +406,16 @@ def main():
     if 'session' not in st.session_state:
         st.session_state.session = None
         st.session_state.auth = None
-        st.session_state.analise_formulario = None
-        st.session_state.valores_selecionados = {}
+        st.session_state.sistema = None
+        st.session_state.localidade_selecionada = None
+        st.session_state.cursos_disponiveis = {}
+        st.session_state.desdobramentos_disponiveis = {}
+        st.session_state.valores_selecionados = {
+            'idlocalidade': '1',  # Niterói por padrão
+            'idformaingresso': '1',  # SISU 1ª edição (valor hipotético)
+            'anosem_ingresso': '20251',  # 2025/1º
+            'idturno': '0'  # Todos
+        }
     
     # Sidebar de login
     with st.sidebar:
@@ -464,7 +432,12 @@ def main():
                         if auth.fazer_login(cpf, senha):
                             st.session_state.auth = auth
                             st.session_state.session = auth.get_session()
-                            st.rerun()
+                            
+                            # Inicializar sistema
+                            sistema = SistemaRelatorios(st.session_state.session)
+                            if sistema.carregar_pagina_inicial():
+                                st.session_state.sistema = sistema
+                                st.rerun()
                         else:
                             st.error("Falha na autenticação")
                 else:
@@ -474,8 +447,16 @@ def main():
             if st.button("Sair", use_container_width=True):
                 st.session_state.session = None
                 st.session_state.auth = None
-                st.session_state.analise_formulario = None
-                st.session_state.valores_selecionados = {}
+                st.session_state.sistema = None
+                st.session_state.localidade_selecionada = None
+                st.session_state.cursos_disponiveis = {}
+                st.session_state.desdobramentos_disponiveis = {}
+                st.session_state.valores_selecionados = {
+                    'idlocalidade': '1',
+                    'idformaingresso': '1',
+                    'anosem_ingresso': '20251',
+                    'idturno': '0'
+                }
                 st.rerun()
     
     # Conteúdo principal
@@ -484,173 +465,209 @@ def main():
     else:
         st.header("📊 Configuração do Relatório")
         
-        # Botão para analisar formulário
-        if st.button("🔍 Analisar Formulário Completo", type="primary", use_container_width=True):
-            with st.spinner("Analisando formulário..."):
-                try:
-                    analisador = AnalisadorFormulario(st.session_state.session)
-                    analise = analisador.analisar_formulario_completo()
-                    st.session_state.analise_formulario = analise
-                    st.success(f"✅ Análise completa! {len(analise['campos'])} campos encontrados.")
-                except Exception as e:
-                    st.error(f"❌ Erro na análise: {str(e)}")
+        if not st.session_state.sistema:
+            st.error("❌ Erro ao inicializar sistema de relatórios")
+            return
         
-        # Se temos análise, mostrar campos
-        if st.session_state.analise_formulario:
-            analise = st.session_state.analise_formulario
+        sistema = st.session_state.sistema
+        
+        # Seção 1: Seleção de Localidade
+        st.subheader("1. 📍 Localidade")
+        
+        # Obter opções de localidade
+        localidades = {}
+        if 'idlocalidade' in sistema.dados_formulario.get('campos', {}):
+            campo_localidade = sistema.dados_formulario['campos']['idlocalidade']
+            if campo_localidade['tipo'] == 'select':
+                for opcao in campo_localidade['opcoes']:
+                    if opcao['valor']:
+                        localidades[opcao['valor']] = opcao['texto']
+        
+        if localidades:
+            # Selecionar localidade
+            localidade_selecionada = st.selectbox(
+                "Selecione a localidade:",
+                options=list(localidades.keys()),
+                format_func=lambda x: localidades.get(x, x),
+                index=list(localidades.keys()).index('1') if '1' in localidades else 0,
+                key="select_localidade"
+            )
             
-            st.markdown("---")
-            st.subheader("📋 Campos do Formulário")
+            st.session_state.valores_selecionados['idlocalidade'] = localidade_selecionada
             
-            # Separar campos por tipo
-            campos_select = {k: v for k, v in analise['campos'].items() if v['tipo'] == 'select'}
-            campos_input = {k: v for k, v in analise['campos'].items() if v['tipo'] != 'select'}
+            # Botão para carregar cursos desta localidade
+            if st.button("🔄 Carregar Cursos desta Localidade", key="btn_carregar_cursos"):
+                with st.spinner("Carregando cursos..."):
+                    cursos = sistema.obter_cursos_para_localidade(localidade_selecionada)
+                    if cursos:
+                        st.session_state.cursos_disponiveis = cursos
+                        st.session_state.localidade_selecionada = localidade_selecionada
+                        st.success(f"✅ {len(cursos)} cursos carregados!")
+                    else:
+                        st.error("❌ Não foi possível carregar os cursos")
+        else:
+            st.warning("Não foi possível carregar as localidades")
+        
+        st.markdown("---")
+        
+        # Seção 2: Seleção de Curso (se temos cursos carregados)
+        if st.session_state.cursos_disponiveis:
+            st.subheader("2. 🎓 Curso")
             
-            # Mostrar selects primeiro (são os mais importantes)
-            if campos_select:
-                st.write("### 🔽 Campos de Seleção (Selects)")
+            # Filtrar cursos de Química
+            cursos_quimica = {
+                codigo: nome for codigo, nome in st.session_state.cursos_disponiveis.items()
+                if 'química' in nome.lower() or 'quimica' in nome.lower()
+            }
+            
+            if cursos_quimica:
+                # Selecionar curso
+                curso_selecionado = st.selectbox(
+                    "Selecione o curso de Química:",
+                    options=list(cursos_quimica.keys()),
+                    format_func=lambda x: cursos_quimica.get(x, x),
+                    key="select_curso"
+                )
                 
-                # Campos importantes que já identificamos
-                campos_importantes = ['idlocalidade', 'idcurso', 'iddesdobramento', 
-                                     'idformaingresso', 'anosem_ingresso', 'idturno']
+                st.session_state.valores_selecionados['idcurso'] = curso_selecionado
                 
-                for campo_nome in campos_importantes:
-                    if campo_nome in campos_select:
-                        campo = campos_select[campo_nome]
+                # Botão para carregar desdobramentos deste curso
+                if st.button("🔄 Carregar Desdobramentos deste Curso", key="btn_carregar_desdobramentos"):
+                    with st.spinner("Carregando desdobramentos..."):
+                        desdobramentos = sistema.obter_desdobramentos_para_curso(
+                            st.session_state.localidade_selecionada or '1',
+                            curso_selecionado
+                        )
                         
-                        with st.expander(f"**{campo_nome}** ({campo.get('id', 'sem id')})", expanded=True):
-                            st.write(f"Obrigatório: {'✅ Sim' if campo['required'] else '❌ Não'}")
-                            
-                            # Criar lista de opções para o select
-                            opcoes = campo['opcoes']
-                            
-                            if opcoes:
-                                # Mostrar algumas informações sobre as opções
-                                df_opcoes = pd.DataFrame([
-                                    {
-                                        'Valor': opt['valor'],
-                                        'Texto': opt['texto'],
-                                        'Selecionado': '✅' if opt['selecionado'] else '❌'
-                                    }
-                                    for opt in opcoes[:50]  # Mostrar até 50 opções
-                                ])
-                                
-                                st.dataframe(df_opcoes, use_container_width=True)
-                                
-                                if len(opcoes) > 50:
-                                    st.info(f"... e mais {len(opcoes) - 50} opções")
-                                
-                                # Selecionar valor
-                                opcoes_dict = {opt['valor']: f"{opt['texto']} ({opt['valor']})" 
-                                              for opt in opcoes if opt['valor'].strip()}
-                                
-                                if opcoes_dict:
-                                    valor_atual = st.session_state.valores_selecionados.get(campo_nome, '')
-                                    
-                                    # Encontrar texto para valor atual
-                                    texto_atual = ''
-                                    if valor_atual and valor_atual in opcoes_dict:
-                                        texto_atual = opcoes_dict[valor_atual]
-                                    elif valor_atual:
-                                        # Procurar valor nas opções
-                                        for opt in opcoes:
-                                            if opt['valor'] == valor_atual:
-                                                texto_atual = f"{opt['texto']} ({opt['valor']})"
-                                                break
-                                    
-                                    valor_selecionado = st.selectbox(
-                                        f"Selecione valor para **{campo_nome}**:",
-                                        options=list(opcoes_dict.keys()),
-                                        index=list(opcoes_dict.keys()).index(valor_atual) if valor_atual in opcoes_dict else 0,
-                                        format_func=lambda x: opcoes_dict.get(x, x),
-                                        key=f"select_{campo_nome}"
-                                    )
-                                    
-                                    st.session_state.valores_selecionados[campo_nome] = valor_selecionado
-                                    st.info(f"Valor selecionado: `{valor_selecionado}`")
-                
-                # Outros selects não listados acima
-                outros_selects = [k for k in campos_select.keys() if k not in campos_importantes]
-                if outros_selects:
-                    with st.expander(f"Outros campos de seleção ({len(outros_selects)})"):
-                        for campo_nome in outros_selects[:10]:  # Mostrar até 10
-                            campo = campos_select[campo_nome]
-                            st.write(f"**{campo_nome}**: {len(campo['opcoes'])} opções")
+                        if desdobramentos:
+                            st.session_state.desdobramentos_disponiveis = desdobramentos
+                            st.success(f"✅ {len(desdobramentos)} desdobramentos carregados!")
+                        else:
+                            st.warning("⚠️ Nenhum desdobramento encontrado ou o curso não tem desdobramentos")
             
-            # Mostrar inputs
-            if campos_input:
-                st.write("### ⌨️ Outros Campos")
-                
-                # Filtrar inputs importantes
-                inputs_importantes = {k: v for k, v in campos_input.items() 
-                                     if v['tipo'] in ['hidden', 'text', 'number'] and v['valor']}
-                
-                if inputs_importantes:
-                    with st.expander("Campos com valores pré-definidos"):
-                        for campo_nome, campo in list(inputs_importantes.items())[:20]:  # Mostrar até 20
-                            st.write(f"**{campo_nome}** ({campo['tipo']}): `{campo['valor'][:100]}`")
-            
-            # Mostrar botões
-            if analise['botoes']:
-                st.write("### 🔘 Botões do Formulário")
-                for botao in analise['botoes']:
-                    st.write(f"**{botao['nome'] or 'Sem nome'}**: {botao['texto']} (tipo: {botao['tipo']})")
-            
-            # Interface para gerar relatório
-            st.markdown("---")
-            st.subheader("🚀 Gerar Relatório")
-            
-            # Valores mínimos recomendados baseados na análise anterior
-            st.info("**Valores recomendados para teste:**")
-            
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.write("📍 **Localidade:**")
-                st.code("idlocalidade: 1 (Niterói)")
-            
-            with col2:
-                st.write("🎓 **Curso/Desdobramento:**")
-                st.code("Precisa descobrir valores")
-            
-            with col3:
-                st.write("📅 **Período:**")
-                st.code("anosem_ingresso: 20251")
-            
-            # Verificar se temos valores selecionados suficientes
-            campos_obrigatorios = ['idlocalidade', 'idcurso', 'iddesdobramento', 'anosem_ingresso']
-            campos_preenchidos = [c for c in campos_obrigatorios if st.session_state.valores_selecionados.get(c)]
-            
-            if len(campos_preenchidos) >= 3:
-                st.success(f"✅ {len(campos_preenchidos)}/{len(campos_obrigatorios)} campos obrigatórios preenchidos")
             else:
-                st.warning(f"⚠️ Apenas {len(campos_preenchidos)}/{len(campos_obrigatorios)} campos obrigatórios preenchidos")
+                st.warning("Nenhum curso de Química encontrado na lista")
+                
+                # Mostrar todos os cursos disponíveis para debug
+                with st.expander("📋 Todos os cursos disponíveis"):
+                    for codigo, nome in list(st.session_state.cursos_disponiveis.items())[:20]:
+                        st.write(f"`{codigo}`: {nome}")
+        
+        st.markdown("---")
+        
+        # Seção 3: Seleção de Desdobramento (se temos desdobramentos)
+        if st.session_state.desdobramentos_disponiveis:
+            st.subheader("3. 📚 Desdobramento")
             
-            # Mostrar valores selecionados
-            if st.session_state.valores_selecionados:
-                with st.expander("📝 Valores Selecionados", expanded=True):
-                    for campo, valor in st.session_state.valores_selecionados.items():
-                        st.write(f"**{campo}**: `{valor}`")
+            desdobramento_selecionado = st.selectbox(
+                "Selecione o desdobramento:",
+                options=list(st.session_state.desdobramentos_disponiveis.keys()),
+                format_func=lambda x: st.session_state.desdobramentos_disponiveis.get(x, x),
+                key="select_desdobramento"
+            )
+            
+            st.session_state.valores_selecionados['iddesdobramento'] = desdobramento_selecionado
+        
+        st.markdown("---")
+        
+        # Seção 4: Outros Filtros
+        st.subheader("4. ⚙️ Outros Filtros")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Forma de Ingresso
+            formas_ingresso = {}
+            if 'idformaingresso' in sistema.dados_formulario.get('campos', {}):
+                campo_forma = sistema.dados_formulario['campos']['idformaingresso']
+                if campo_forma['tipo'] == 'select':
+                    for opcao in campo_forma['opcoes']:
+                        if opcao['valor']:
+                            formas_ingresso[opcao['valor']] = opcao['texto']
+            
+            if formas_ingresso:
+                # Filtrar apenas formas de ingresso relacionadas a SISU/Vestibular
+                formas_filtradas = {
+                    k: v for k, v in formas_ingresso.items()
+                    if any(termo in v.lower() for termo in ['sisu', 'vestibular', 'enem', 'seleção'])
+                }
+                
+                if formas_filtradas:
+                    forma_selecionada = st.selectbox(
+                        "Forma de Ingresso:",
+                        options=list(formas_filtradas.keys()),
+                        format_func=lambda x: formas_filtradas.get(x, x),
+                        key="select_forma_ingresso"
+                    )
+                    st.session_state.valores_selecionados['idformaingresso'] = forma_selecionada
+        
+        with col2:
+            # Período de Ingresso
+            periodos = {}
+            if 'anosem_ingresso' in sistema.dados_formulario.get('campos', {}):
+                campo_periodo = sistema.dados_formulario['campos']['anosem_ingresso']
+                if campo_periodo['tipo'] == 'select':
+                    for opcao in campo_periodo['opcoes']:
+                        if opcao['valor']:
+                            periodos[opcao['valor']] = opcao['texto']
+            
+            if periodos:
+                periodo_selecionado = st.selectbox(
+                    "Período de Ingresso:",
+                    options=list(periodos.keys()),
+                    format_func=lambda x: periodos.get(x, x),
+                    index=0,
+                    key="select_periodo"
+                )
+                st.session_state.valores_selecionados['anosem_ingresso'] = periodo_selecionado
+        
+        st.markdown("---")
+        
+        # Seção 5: Resumo e Geração
+        st.subheader("5. 🚀 Gerar Relatório")
+        
+        # Mostrar valores selecionados
+        with st.expander("📝 Valores Selecionados", expanded=True):
+            for campo, valor in st.session_state.valores_selecionados.items():
+                if valor:
+                    # Buscar nome amigável se disponível
+                    nome_amigavel = valor
+                    if campo == 'idlocalidade' and localidades:
+                        nome_amigavel = localidades.get(valor, valor)
+                    elif campo == 'idcurso' and st.session_state.cursos_disponiveis:
+                        nome_amigavel = st.session_state.cursos_disponiveis.get(valor, valor)
+                    elif campo == 'iddesdobramento' and st.session_state.desdobramentos_disponiveis:
+                        nome_amigavel = st.session_state.desdobramentos_disponiveis.get(valor, valor)
+                    elif campo == 'idformaingresso' and formas_ingresso:
+                        nome_amigavel = formas_ingresso.get(valor, valor)
+                    elif campo == 'anosem_ingresso' and periodos:
+                        nome_amigavel = periodos.get(valor, valor)
+                    
+                    st.write(f"**{campo}**: {nome_amigavel}")
+        
+        # Verificar campos obrigatórios
+        campos_obrigatorios = ['idlocalidade', 'idcurso', 'iddesdobramento', 'anosem_ingresso']
+        campos_preenchidos = [
+            c for c in campos_obrigatorios 
+            if st.session_state.valores_selecionados.get(c) and 
+            st.session_state.valores_selecionados[c] not in ['', '0']
+        ]
+        
+        status_campos = f"✅ {len(campos_preenchidos)}/{len(campos_obrigatorios)} campos obrigatórios"
+        
+        if len(campos_preenchidos) == len(campos_obrigatorios):
+            st.success(status_campos)
             
             # Botão para gerar relatório
-            if st.button("🚀 GERAR RELATÓRIO COM VALORES SELECIONADOS", 
-                        type="primary", 
-                        use_container_width=True,
-                        disabled=len(campos_preenchidos) < 3):
-                
-                with st.spinner("Gerando relatório..."):
+            if st.button("🚀 GERAR RELATÓRIO EXCEL", type="primary", use_container_width=True):
+                with st.spinner("Gerando relatório Excel..."):
                     try:
-                        gerador = GeradorRelatorios(st.session_state.session)
-                        
-                        # Adicionar token aos valores selecionados
-                        valores_completos = st.session_state.valores_selecionados.copy()
-                        
-                        # Garantir que temos os campos obrigatórios
-                        if 'idlocalidade' not in valores_completos:
-                            valores_completos['idlocalidade'] = '1'  # Niterói
+                        # Adicionar campo 'format' para especificar Excel
+                        filtros_completos = st.session_state.valores_selecionados.copy()
+                        filtros_completos['format'] = 'xlsx'
                         
                         # Gerar relatório
-                        conteudo_excel = gerador.gerar_relatorio_com_valores(valores_completos)
+                        conteudo_excel = sistema.gerar_relatorio_excel(filtros_completos)
                         
                         # Criar botão de download
                         st.success("✅ Relatório gerado com sucesso!")
@@ -669,36 +686,55 @@ def main():
                         
                     except Exception as e:
                         st.error(f"❌ Erro ao gerar relatório: {str(e)}")
-                        st.info("""
-                        **Possíveis soluções:**
-                        1. Verifique se todos os campos obrigatórios estão preenchidos
-                        2. Tente diferentes combinações de valores
-                        3. Verifique os logs para mais detalhes
-                        """)
-        
+                        
+                        # Sugestões de solução
+                        with st.expander("🛠️ Solução de Problemas"):
+                            st.markdown("""
+                            **Possíveis causas:**
+                            1. **Valores incorretos** - Verifique se os códigos dos cursos estão corretos
+                            2. **Campo obrigatório faltando** - Pode haver outros campos obrigatórios
+                            3. **Token expirado** - Tente recarregar a página
+                            
+                            **Soluções:**
+                            1. **Teste manualmente** no sistema web para ver os valores corretos
+                            2. **Verifique os logs** no terminal para mais detalhes
+                            3. **Tente diferentes combinações** de valores
+                            """)
         else:
-            st.info("👆 Clique em 'Analisar Formulário Completo' para começar")
+            st.warning(f"{status_campos}")
+            st.info("""
+            **Para gerar o relatório, você precisa:**
+            
+            1. **Selecionar uma localidade** e clicar em "Carregar Cursos"
+            2. **Selecionar um curso de Química** e clicar em "Carregar Desdobramentos"
+            3. **Selecionar um desdobramento**
+            4. **Selecionar período de ingresso**
+            
+            **Dica:** Comece selecionando Niterói (código 1) para ver os cursos disponíveis.
+            """)
         
         st.markdown("---")
         st.info("""
-        **📋 Instruções:**
+        **📋 Fluxo de trabalho recomendado:**
         
-        1. **Analise o formulário** clicando no botão acima
-        2. **Preencha os campos obrigatórios:**
-           - `idlocalidade`: 1 (Niterói)
-           - `idcurso`: Código do curso de Química
-           - `iddesdobramento`: Código da especialização
-           - `anosem_ingresso`: Período no formato 20251, 20252, etc.
-        3. **Clique em GERAR RELATÓRIO**
+        1. **Localidade** → Selecione "Niterói (1)" e clique em "Carregar Cursos"
+        2. **Curso** → Selecione um curso de Química e clique em "Carregar Desdobramentos"
+        3. **Desdobramento** → Selecione a especialização (Licenciatura/Bacharelado/Industrial)
+        4. **Forma de Ingresso** → Selecione SISU ou outra forma
+        5. **Período** → Selecione o período desejado
+        6. **Clique em GERAR RELATÓRIO EXCEL**
         
-        **🔍 Para encontrar os valores corretos manualmente:**
-        
-        1. Acesse o sistema manualmente
-        2. Selecione Niterói (já deve estar como padrão)
-        3. Inspecione o select `idcurso` para ver o código do curso de Química
-        4. Depois de selecionar o curso, inspecione `iddesdobramento`
-        5. Anote os códigos e use aqui
+        **🔍 Se não encontrar cursos de Química:**
+        - Verifique se selecionou a localidade correta
+        - Tente outras localidades onde Química é oferecida
+        - Os cursos podem ter nomes diferentes (ex: "Química Industrial")
         """)
+        
+        # Debug: Mostrar estado atual
+        with st.expander("🔧 Debug - Estado Atual", expanded=False):
+            st.write("**Cursos carregados:**", len(st.session_state.cursos_disponiveis))
+            st.write("**Desdobramentos carregados:**", len(st.session_state.desdobramentos_disponiveis))
+            st.write("**Token:**", sistema.token[:20] + "..." if sistema.token else "Não disponível")
 
 
 if __name__ == "__main__":
