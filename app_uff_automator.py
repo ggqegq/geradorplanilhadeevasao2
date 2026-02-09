@@ -1,6 +1,6 @@
 """
 Automador de Relatórios - UFF Química
-Versão 5: Login com fluxo Keycloak completo e cookies persistentes
+Versão Final: Método de login baseado no auth.py original
 """
 
 import streamlit as st
@@ -11,40 +11,27 @@ from bs4 import BeautifulSoup
 import pandas as pd
 import logging
 from datetime import datetime
-from urllib.parse import urljoin, urlparse, parse_qs
+from urllib.parse import urljoin, urlparse
 import io
-import json
-import uuid
 
-# Configurar logging detalhado
+# Configurar logging
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Configurações
+# Configurações EXATAMENTE como no auth.py original
 BASE_URL = "https://app.uff.br"
 APLICACAO_URL = "https://app.uff.br/graduacao/administracaoacademica"
-KEYCLOAK_BASE = "https://app.uff.br/auth/realms/master/protocol/openid-connect"
-LISTAGEM_ALUNOS_URL = f"{APLICACAO_URL}/relatorios/listagens_alunos"
+TIMEOUT_REQUESTS = 30
 
-# Headers para simular navegador real
+# Headers como no auth.py original
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-    'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Connection': 'keep-alive',
-    'Upgrade-Insecure-Requests': '1',
-    'Sec-Fetch-Dest': 'document',
-    'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'none',
-    'Sec-Fetch-User': '?1',
-    'Cache-Control': 'max-age=0',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
 }
-
-TIMEOUT_REQUESTS = 45
 
 # Mapeamento de Desdobramentos
 DESDOBRAMENTOS_CURSOS = {
@@ -71,335 +58,303 @@ FORMAS_INGRESSO = {
     '2': 'SISU 2ª Edição'
 }
 
-class UFFAuthenticator:
-    """Autenticador robusto para o sistema UFF com Keycloak"""
+class LoginUFF:
+    """Classe IDÊNTICA ao auth.py original que funcionava"""
     
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update(HEADERS)
-        # Configurar para manter cookies entre requisições
-        self.session.cookies.clear()
         self.is_authenticated = False
-        self.session_id = str(uuid.uuid4())
-        self.cookie_jar = {}
-        
-    def save_debug_info(self, step, response, html_snippet=None):
-        """Salva informações de debug para análise"""
-        debug_info = {
-            'step': step,
-            'timestamp': datetime.now().isoformat(),
-            'url': response.url,
-            'status_code': response.status_code,
-            'cookies': dict(self.session.cookies),
-            'headers': dict(response.headers),
-            'redirect_history': [r.url for r in response.history]
-        }
-        
-        logger.debug(f"\n{'='*80}")
-        logger.debug(f"DEBUG STEP: {step}")
-        logger.debug(f"URL: {response.url}")
-        logger.debug(f"Status: {response.status_code}")
-        logger.debug(f"Cookies: {dict(self.session.cookies)}")
-        
-        if html_snippet and len(html_snippet) < 2000:
-            logger.debug(f"HTML snippet:\n{html_snippet}")
-        
-        return debug_info
+        self.auth_data = {}
     
-    def discover_login_url(self):
-        """Descobre a URL de login correta seguindo redirecionamentos"""
-        try:
-            logger.info("Descobrindo URL de login...")
-            
-            # 1. Acessar a aplicação principal
-            response = self.session.get(
-                APLICACAO_URL,
-                timeout=TIMEOUT_REQUESTS,
-                allow_redirects=True
-            )
-            
-            self.save_debug_info("1. Acesso inicial", response)
-            
-            # 2. Procurar por links de login ou redirecionamento para Keycloak
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Verificar se já está autenticado
-            if 'administracaoacademica' in response.url and response.status_code == 200:
-                logger.info("Já autenticado!")
-                return None
-            
-            # 3. Procurar por redirecionamento para Keycloak
-            auth_patterns = [
-                '/auth/realms/master',
-                '/auth/',
-                'openid-connect',
-                'login-actions'
-            ]
-            
-            for pattern in auth_patterns:
-                if pattern in response.url:
-                    logger.info(f"Encontrado padrão de autenticação: {pattern}")
-                    return response.url
-            
-            # 4. Procurar por formulário de login no HTML
-            login_form = soup.find('form', {'id': 'kc-form-login'})
-            if login_form:
-                action = login_form.get('action', '')
-                if action:
-                    full_url = urljoin(BASE_URL, action)
-                    logger.info(f"Formulário de login encontrado: {full_url}")
-                    return full_url
-            
-            # 5. Tentar URL padrão do Keycloak
-            keycloak_url = f"{KEYCLOAK_BASE}/auth"
-            logger.info(f"Tentando URL padrão do Keycloak: {keycloak_url}")
-            
-            response = self.session.get(
-                keycloak_url,
-                params={
-                    'client_id': 'administracaoacademica',
-                    'redirect_uri': APLICACAO_URL,
-                    'response_type': 'code',
-                    'scope': 'openid',
-                    'state': self.session_id
-                },
-                timeout=TIMEOUT_REQUESTS,
-                allow_redirects=True
-            )
-            
-            self.save_debug_info("2. Keycloak padrão", response)
-            
-            if response.status_code == 200:
-                return response.url
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"Erro ao descobrir URL de login: {e}")
-            return None
-    
-    def extract_login_form_data(self, html_content):
-        """Extrai todos os dados do formulário de login"""
+    def extract_login_parameters(self, html_content):
+        """Extrai parâmetros do formulário de login - MÉTODO ORIGINAL QUE FUNCIONAVA"""
         soup = BeautifulSoup(html_content, 'html.parser')
         
-        # Encontrar o formulário de login
-        form = soup.find('form')
-        if not form:
-            # Tentar encontrar por ID específico do Keycloak
-            form = soup.find('form', {'id': 'kc-form-login'})
+        # PRIMEIRO, tentar encontrar o formulário pelo ID - como no original
+        login_form = soup.find('form', {'id': 'kc-form-login'})
         
-        if not form:
-            logger.error("Nenhum formulário encontrado no HTML")
-            logger.error(f"Primeiros 1000 chars do HTML:\n{html_content[:1000]}")
+        if not login_form:
+            # Tentar outros padrões comuns - como no original
+            login_form = soup.find('form', action=lambda x: x and '/auth/' in x)
+            if not login_form:
+                login_form = soup.find('form', method='post')
+        
+        if not login_form:
+            logger.error("Formulário não encontrado")
+            # Debug: mostrar tipos de formulários encontrados
+            forms = soup.find_all('form')
+            for i, form in enumerate(forms):
+                logger.error(f"Form {i}: id={form.get('id')}, action={form.get('action')}, method={form.get('method')}")
             return None
         
-        # Extrair action URL
-        action = form.get('action', '')
-        if not action.startswith('http'):
-            action = urljoin(BASE_URL, action)
+        action_url = login_form.get('action', '')
+        hidden_inputs = {}
         
-        # Extrair todos os inputs
-        form_data = {}
-        for input_tag in form.find_all('input'):
-            name = input_tag.get('name')
+        for input_tag in login_form.find_all('input', type='hidden'):
+            name = input_tag.get('name', '')
+            value = input_tag.get('value', '')
+            if name:
+                hidden_inputs[name] = value
+        
+        logger.info(f"Formulário encontrado - Action: {action_url}")
+        logger.info(f"Campos hidden extraídos: {list(hidden_inputs.keys())}")
+        
+        # DEBUG: Mostrar todos os campos do formulário
+        logger.debug("Todos os campos do formulário:")
+        for input_tag in login_form.find_all('input'):
+            name = input_tag.get('name', '')
             value = input_tag.get('value', '')
             input_type = input_tag.get('type', 'text')
-            
             if name:
-                form_data[name] = value
-        
-        logger.info(f"Formulário encontrado - Action: {action}")
-        logger.info(f"Campos do formulário: {list(form_data.keys())}")
+                logger.debug(f"  Campo: name='{name}', value='{value}', type='{input_type}'")
         
         return {
-            'action': action,
-            'data': form_data
+            'action_url': action_url,
+            'hidden_fields': hidden_inputs
         }
     
-    def perform_keycloak_login(self, login_url, cpf, senha):
-        """Executa o login no Keycloak"""
+    def fazer_login(self, cpf: str, senha: str) -> bool:
+        """Realiza login no sistema UFF - VERSÃO SIMPLIFICADA DO ORIGINAL"""
         try:
-            # 1. Obter página de login
-            logger.info(f"Acessando página de login: {login_url}")
-            response = self.session.get(
-                login_url,
-                timeout=TIMEOUT_REQUESTS,
-                allow_redirects=True
-            )
+            st.info("Conectando ao portal UFF...")
+            logger.info(f"Tentando login para CPF: {cpf}")
             
-            self.save_debug_info("3. Página de login", response, response.text[:1000])
+            # PASSO 1: Acessar a página inicial da aplicação - como no original
+            st.info("Acessando aplicação...")
+            response = self.session.get(APLICACAO_URL, timeout=TIMEOUT_REQUESTS)
             
-            # 2. Extrair dados do formulário
-            form_info = self.extract_login_form_data(response.text)
-            if not form_info:
-                return False, "Não foi possível extrair formulário de login"
+            if response.status_code != 200:
+                logger.error(f"Falha ao acessar página: {response.status_code}")
+                st.error(f"Erro de conexão: Status {response.status_code}")
+                return False
             
-            # 3. Preparar dados para envio
-            form_data = form_info['data']
-            form_data['username'] = cpf
-            form_data['password'] = senha
+            # DEBUG: Mostrar redirecionamentos
+            if response.history:
+                logger.info("Histórico de redirecionamentos:")
+                for i, resp in enumerate(response.history):
+                    logger.info(f"  [{i}] {resp.status_code} → {resp.url}")
             
-            # Remover valores vazios que podem causar problemas
-            form_data = {k: v for k, v in form_data.items() if v is not None}
+            logger.info(f"URL final: {response.url}")
+            logger.info(f"Cookies após acesso inicial: {dict(self.session.cookies)}")
             
-            logger.info(f"Enviando login para: {form_info['action']}")
-            logger.debug(f"Dados do formulário: {form_data}")
+            # PASSO 2: Extrair parâmetros do formulário de login
+            st.info("Extraindo parâmetros de login...")
+            login_params = self.extract_login_parameters(response.text)
             
-            # 4. Enviar requisição de login
+            if not login_params:
+                logger.error("Não foi possível encontrar o formulário de login")
+                # Mostrar um pouco do HTML para debug
+                soup = BeautifulSoup(response.text, 'html.parser')
+                title = soup.find('title')
+                if title:
+                    logger.error(f"Título da página: {title.text}")
+                
+                # Procurar por texto indicativo
+                if "login" in response.text.lower():
+                    logger.error("Texto 'login' encontrado na página")
+                if "keycloak" in response.text.lower():
+                    logger.error("Texto 'keycloak' encontrado na página")
+                
+                st.error("Não foi possível acessar o formulário de login. Tente novamente.")
+                return False
+            
+            # PASSO 3: Preparar dados do formulário - SIMPLES como no original
+            st.info("Enviando credenciais...")
+            
+            form_data = {
+                'username': cpf,
+                'password': senha,
+                'rememberMe': 'on'
+            }
+            
+            # Adicionar campos hidden - IMPORTANTE: como no original
+            if login_params['hidden_fields']:
+                form_data.update(login_params['hidden_fields'])
+            
+            # PASSO 4: Construir URL completa da ação
+            login_action = login_params['action_url']
+            
+            # Se for URL relativa, construir URL completa - como no original
+            if login_action.startswith('/'):
+                parsed_base = urlparse(BASE_URL)
+                login_action = f"{parsed_base.scheme}://{parsed_base.netloc}{login_action}"
+            elif not login_action.startswith('http'):
+                # Se não começar com http, juntar com base
+                login_action = urljoin(BASE_URL, login_action)
+            
+            logger.info(f"Enviando login para: {login_action}")
+            logger.info(f"Payload com campos: {list(form_data.keys())}")
+            
+            # PASSO 5: Enviar requisição de login - SIMPLES como no original
             headers = {
                 'User-Agent': HEADERS['User-Agent'],
                 'Referer': response.url,
                 'Origin': BASE_URL,
-                'Content-Type': 'application/x-www-form-urlencoded',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
+                'Content-Type': 'application/x-www-form-urlencoded',
             }
             
             login_response = self.session.post(
-                form_info['action'],
+                login_action,
                 data=form_data,
                 headers=headers,
-                timeout=TIMEOUT_REQUESTS,
-                allow_redirects=True
+                allow_redirects=True,  # IMPORTANTE: permitir redirecionamentos
+                timeout=TIMEOUT_REQUESTS
             )
             
-            self.save_debug_info("4. Resposta do login", login_response, login_response.text[:1000])
-            
-            # 5. Verificar se login foi bem-sucedido
-            logger.info(f"URL após login: {login_response.url}")
+            # DEBUG detalhado da resposta
             logger.info(f"Status após login: {login_response.status_code}")
+            logger.info(f"URL após login: {login_response.url}")
+            logger.info(f"Cookies após login: {dict(self.session.cookies)}")
             
-            # Verificar cookies de sessão
+            # PASSO 6: Verificar se login foi bem-sucedido - CRITÉRIOS SIMPLES
+            success = False
+            success_criteria = []
+            
+            # Critério 1: URL contém aplicação
+            if 'administracaoacademica' in login_response.url:
+                success_criteria.append("URL contém 'administracaoacademica'")
+                success = True
+            
+            # Critério 2: Status 200
+            if login_response.status_code == 200:
+                success_criteria.append("Status 200 OK")
+                success = True
+                
+                # Verificar se há mensagem de erro na página
+                soup = BeautifulSoup(login_response.text, 'html.parser')
+                
+                # Procurar por mensagens de erro comuns
+                error_selectors = [
+                    {'id': 'kc-error-message'},
+                    {'class': 'kc-feedback-text'},
+                    {'class': 'alert-error'},
+                    {'class': 'alert'},
+                    {'class': 'error'}
+                ]
+                
+                for selector in error_selectors:
+                    error_element = soup.find('div', selector) or soup.find('span', selector)
+                    if error_element:
+                        error_text = error_element.get_text(strip=True)
+                        if error_text:
+                            logger.error(f"Mensagem de erro encontrada: {error_text}")
+                            st.error(f"Erro: {error_text}")
+                            return False
+            
+            # Critério 3: Cookies de sessão
             cookies = dict(self.session.cookies)
-            logger.info(f"Cookies após login: {cookies}")
+            if cookies:
+                success_criteria.append(f"Cookies presentes: {len(cookies)}")
+                logger.info(f"Cookies detalhados: {cookies}")
+                if 'JSESSIONID' in cookies or 'AUTH_SESSION_ID' in cookies:
+                    success_criteria.append("Cookies de sessão encontrados")
+                    success = True
             
-            # Critérios de sucesso
-            success_indicators = [
-                'administracaoacademica' in login_response.url,
-                'JSESSIONID' in cookies,
-                'AUTH_SESSION_ID' in cookies,
-                login_response.status_code in [200, 302]
-            ]
+            logger.info(f"Critérios de sucesso: {success_criteria}")
             
-            if any(success_indicators):
-                logger.info("✅ Indicadores de sucesso encontrados")
+            if success:
+                self.is_authenticated = True
                 
-                # Salvar cookies importantes
-                self.cookie_jar = {
-                    'JSESSIONID': cookies.get('JSESSIONID'),
-                    'AUTH_SESSION_ID': cookies.get('AUTH_SESSION_ID')
-                }
-                
-                # Atualizar headers com cookies
-                if 'JSESSIONID' in cookies:
-                    self.session.headers['Cookie'] = f"JSESSIONID={cookies['JSESSIONID']}"
-                
-                return True, "Login bem-sucedido"
-            
-            # Verificar mensagens de erro
-            soup = BeautifulSoup(login_response.text, 'html.parser')
-            
-            # Procurar mensagens de erro comuns
-            error_messages = [
-                "Invalid username or password",
-                "Usuário ou senha inválidos",
-                "Conta desativada",
-                "Too many failed attempts",
-                "Tentativas excessivas"
-            ]
-            
-            for error_msg in error_messages:
-                if error_msg in login_response.text:
-                    return False, error_msg
-            
-            # Procurar elementos de erro do Keycloak
-            error_div = soup.find('div', {'id': 'kc-error-message'})
-            if error_div:
-                return False, error_div.get_text(strip=True)
-            
-            return False, "Falha na autenticação. Verifique suas credenciais."
-            
-        except Exception as e:
-            logger.error(f"Erro durante login: {e}", exc_info=True)
-            return False, f"Erro: {str(e)}"
-    
-    def verify_session(self):
-        """Verifica se a sessão é válida"""
-        try:
-            # Tentar acessar uma página que requer autenticação
-            test_url = f"{APLICACAO_URL}/relatorios"
-            
-            response = self.session.get(
-                test_url,
-                timeout=10,
-                allow_redirects=False
-            )
-            
-            logger.info(f"Verificação de sessão - Status: {response.status_code}")
-            
-            # Se não for redirecionado para login, sessão é válida
-            if response.status_code == 200:
-                return True
-            
-            # Verificar se há redirecionamento para login
-            if response.status_code == 302:
-                location = response.headers.get('location', '')
-                if 'auth' in location or 'login' in location:
-                    logger.warning("Sessão expirada - redirecionado para login")
-                    return False
-            
-            return False
-            
-        except Exception as e:
-            logger.error(f"Erro ao verificar sessão: {e}")
-            return False
-    
-    def login(self, cpf: str, senha: str) -> bool:
-        """Fluxo completo de login"""
-        try:
-            st.info("🔍 Iniciando autenticação no portal UFF...")
-            
-            # Descobrir URL de login
-            with st.spinner("Detectando portal de login..."):
-                login_url = self.discover_login_url()
-                
-                if not login_url:
-                    logger.error("Não foi possível encontrar URL de login")
-                    st.error("❌ Não foi possível acessar o portal de login")
-                    return False
-            
-            # Executar login no Keycloak
-            with st.spinner("Autenticando no Keycloak..."):
-                success, message = self.perform_keycloak_login(login_url, cpf, senha)
-                
-                if not success:
-                    logger.error(f"Falha no login: {message}")
-                    st.error(f"❌ {message}")
-                    return False
-            
-            # Verificar sessão
-            with st.spinner("Verificando sessão..."):
-                if self.verify_session():
-                    self.is_authenticated = True
-                    st.success("✅ Login realizado com sucesso!")
-                    logger.info("✅ Autenticação concluída com sucesso")
+                # TESTAR ACESSO à página protegida
+                test_url = f"{APLICACAO_URL}/relatorios"
+                try:
+                    test_response = self.session.get(test_url, timeout=10, allow_redirects=False)
                     
-                    # Log cookies finais
-                    logger.info(f"Cookies finais: {dict(self.session.cookies)}")
-                    
+                    if test_response.status_code == 200:
+                        st.success("✅ Login realizado com sucesso!")
+                        logger.info("✅ Login bem-sucedido! Acesso à aplicação confirmado.")
+                        return True
+                    elif test_response.status_code == 302:
+                        location = test_response.headers.get('location', '')
+                        if 'auth' not in location:
+                            st.success("✅ Login realizado com sucesso!")
+                            logger.info("✅ Login bem-sucedido!")
+                            return True
+                        else:
+                            st.warning("⚠️ Login realizado, mas sessão pode ser instável")
+                            logger.warning(f"Redirecionado para: {location}")
+                            return True
+                    else:
+                        st.warning("⚠️ Login pode ter sido bem-sucedido, mas verificação falhou")
+                        logger.warning(f"Status do teste: {test_response.status_code}")
+                        return True
+                        
+                except Exception as test_error:
+                    logger.error(f"Erro no teste de acesso: {test_error}")
+                    st.success("✅ Login realizado!")
                     return True
-                else:
-                    logger.error("Falha na verificação da sessão")
-                    st.error("❌ Falha na verificação da sessão")
+            else:
+                # Analisar possíveis erros
+                soup = BeautifulSoup(login_response.text, 'html.parser')
+                
+                # Verificar se é página de erro do Keycloak
+                error_div = soup.find('div', {'id': 'kc-error-message'})
+                if error_div:
+                    error_msg = error_div.get_text(strip=True)
+                    logger.error(f"Erro Keycloak: {error_msg}")
+                    st.error(f"Erro de autenticação: {error_msg}")
                     return False
                 
+                # Verificar mensagens genéricas
+                page_text = login_response.text.lower()
+                if "invalid username or password" in page_text:
+                    error_msg = "CPF ou senha inválidos"
+                elif "account is disabled" in page_text:
+                    error_msg = "Conta desativada"
+                elif "too many failed attempts" in page_text:
+                    error_msg = "Muitas tentativas falhas. Tente novamente mais tarde."
+                else:
+                    # Procurar por qualquer texto de erro
+                    error_spans = soup.find_all('span', class_=lambda x: x and 'error' in x.lower())
+                    if error_spans:
+                        error_msg = error_spans[0].get_text(strip=True)
+                    else:
+                        error_msg = "Falha na autenticação. Verifique suas credenciais."
+                
+                logger.error(f"Falha no login: {error_msg}")
+                st.error(f"❌ {error_msg}")
+                return False
+                
+        except requests.exceptions.Timeout:
+            logger.error("Timeout ao tentar fazer login")
+            st.error("⏱️ Tempo limite excedido. Verifique sua conexão com a internet.")
+            return False
+        except requests.exceptions.ConnectionError:
+            logger.error("Erro de conexão")
+            st.error("🔌 Erro de conexão. Verifique se o portal UFF está acessível.")
+            return False
         except Exception as e:
-            logger.error(f"Erro inesperado no login: {e}", exc_info=True)
-            st.error(f"❌ Erro inesperado: {str(e)[:100]}")
+            logger.error(f"Erro inesperado durante o login: {str(e)}", exc_info=True)
+            st.error(f"⚠️ Erro inesperado: {str(e)[:100]}")
             return False
     
     def get_session(self):
         """Retorna a sessão autenticada"""
         return self.session if self.is_authenticated else None
+    
+    def check_session(self):
+        """Verifica se a sessão ainda é válida"""
+        if not self.is_authenticated:
+            return False
+        
+        try:
+            test_url = f"{APLICACAO_URL}/relatorios"
+            response = self.session.get(test_url, timeout=10, allow_redirects=False)
+            
+            if response.status_code == 200:
+                return True
+            elif response.status_code == 302:
+                location = response.headers.get('location', '')
+                if 'auth' not in location and 'login' not in location:
+                    return True
+            
+            return False
+        except Exception as e:
+            logger.error(f"Erro ao verificar sessão: {e}")
+            return False
 
 
 class GeradorRelatorios:
@@ -412,7 +367,7 @@ class GeradorRelatorios:
     def acessar_pagina_listagem(self):
         """Acessa a página de listagem de alunos"""
         try:
-            logger.info(f"Acessando: {LISTAGEM_ALUNOS_URL}")
+            LISTAGEM_ALUNOS_URL = f"{self.base_url}/relatorios/listagens_alunos"
             response = self.session.get(LISTAGEM_ALUNOS_URL, timeout=15)
             response.raise_for_status()
             return BeautifulSoup(response.text, 'html.parser')
@@ -422,96 +377,65 @@ class GeradorRelatorios:
     
     def extrair_parametros_formulario(self, soup):
         """Extrai parâmetros do formulário"""
-        try:
-            parametros = {
-                'inputs': {},
-                'selects': {},
-                'action': None,
-                'authenticity_token': None
-            }
-            
-            form = soup.find('form')
-            if not form:
-                logger.error("Formulário não encontrado")
-                logger.error(f"HTML disponível:\n{soup.prettify()[:2000]}")
-                raise Exception("Formulário não encontrado")
-            
-            parametros['action'] = form.get('action', '')
-            
-            # Extrair todos os inputs
-            for input_tag in form.find_all('input'):
-                name = input_tag.get('name')
-                if name:
-                    parametros['inputs'][name] = {
-                        'value': input_tag.get('value', ''),
-                        'type': input_tag.get('type', 'text')
-                    }
-                    
-                    if name == 'authenticity_token':
-                        parametros['authenticity_token'] = input_tag.get('value')
-            
-            # Extrair todos os selects
-            for select_tag in form.find_all('select'):
-                name = select_tag.get('name')
-                if name:
-                    options = []
-                    for option in select_tag.find_all('option'):
-                        options.append({
-                            'value': option.get('value', ''),
-                            'text': option.get_text(strip=True),
-                            'selected': 'selected' in option.attrs
-                        })
-                    parametros['selects'][name] = options
-            
-            logger.info(f"Formulário extraído - Token: {parametros.get('authenticity_token')}")
-            logger.info(f"Selects disponíveis: {list(parametros['selects'].keys())}")
-            
-            return parametros
-            
-        except Exception as e:
-            logger.error(f"Erro ao extrair parâmetros: {e}")
-            raise
+        parametros = {
+            'inputs': {},
+            'selects': {},
+            'action': None,
+            'authenticity_token': None
+        }
+        
+        form = soup.find('form')
+        if not form:
+            raise Exception("Formulário não encontrado")
+        
+        parametros['action'] = form.get('action', '')
+        
+        for input_tag in form.find_all('input'):
+            name = input_tag.get('name')
+            if name:
+                parametros['inputs'][name] = {
+                    'value': input_tag.get('value', ''),
+                    'type': input_tag.get('type', 'text')
+                }
+                if name == 'authenticity_token':
+                    parametros['authenticity_token'] = input_tag.get('value')
+        
+        for select_tag in form.find_all('select'):
+            name = select_tag.get('name')
+            if name:
+                options = []
+                for option in select_tag.find_all('option'):
+                    options.append({
+                        'value': option.get('value', ''),
+                        'text': option.get_text(strip=True),
+                        'selected': 'selected' in option.attrs
+                    })
+                parametros['selects'][name] = options
+        
+        return parametros
     
     def preencher_formulario_com_filtros(self, parametros, filtros):
         """Preenche o formulário com filtros"""
         dados_formulario = {}
         
-        # Adicionar token CSRF se existir
         if parametros.get('authenticity_token'):
             dados_formulario['authenticity_token'] = parametros['authenticity_token']
         
-        # Adicionar valores padrão dos inputs
         for name, input_info in parametros['inputs'].items():
             if input_info['value']:
                 dados_formulario[name] = input_info['value']
         
-        # Aplicar filtros
         for campo, valor_buscado in filtros.items():
             if campo in parametros['selects']:
                 opcoes = parametros['selects'][campo]
-                valor_encontrado = False
-                
-                # Tentar encontrar por valor exato
                 for opcao in opcoes:
                     if str(opcao['value']).strip() == str(valor_buscado).strip():
                         dados_formulario[campo] = opcao['value']
-                        logger.info(f"Filtro aplicado (exato): {campo} = {opcao['value']}")
-                        valor_encontrado = True
                         break
-                
-                # Se não encontrou por valor, tentar por texto
-                if not valor_encontrado:
-                    for opcao in opcoes:
-                        if valor_buscado in opcao['text']:
-                            dados_formulario[campo] = opcao['value']
-                            logger.info(f"Filtro aplicado (texto): {campo} = {opcao['value']}")
-                            valor_encontrado = True
-                            break
-                
-                if not valor_encontrado:
-                    logger.warning(f"Filtro não encontrado: {campo} = {valor_buscado}")
+                    elif valor_buscado in opcao['text']:
+                        dados_formulario[campo] = opcao['value']
+                        break
         
-        logger.info(f"Dados do formulário: {list(dados_formulario.keys())}")
         return dados_formulario
     
     def submeter_formulario(self, dados_formulario):
@@ -519,29 +443,23 @@ class GeradorRelatorios:
         try:
             action_url = urljoin(self.base_url, '/graduacao/administracaoacademica/relatorios/listagens_alunos')
             
-            logger.info(f"Submetendo formulário para: {action_url}")
-            
             response = self.session.post(
                 action_url,
                 data=dados_formulario,
                 timeout=30,
                 allow_redirects=True
             )
-            
             response.raise_for_status()
             
-            # Extrair ID do relatório
             match = re.search(r'/relatorios/(\d+)', response.url)
             if match:
                 relatorio_id = match.group(1)
-                logger.info(f"Relatório criado - ID: {relatorio_id}")
                 return {
                     'success': True,
                     'relatorio_id': relatorio_id,
                     'url': response.url
                 }
             else:
-                logger.error(f"Não encontrou ID na URL: {response.url}")
                 return {'success': False, 'error': 'ID do relatório não encontrado'}
             
         except Exception as e:
@@ -557,7 +475,6 @@ class GeradorRelatorios:
             
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Procurar link de download
             download_link = soup.find('a', href=lambda x: x and '.xlsx' in x)
             if download_link:
                 download_url = urljoin(BASE_URL, download_link.get('href'))
@@ -649,185 +566,89 @@ class GeradorRelatorios:
 def main():
     """Aplicação principal"""
     st.set_page_config(
-        page_title="Automador de Relatórios UFF",
-        layout="wide",
-        initial_sidebar_state="expanded"
+        page_title="Automador de Relatórios UFF - Química",
+        layout="wide"
     )
     
-    # Estilo CSS customizado
-    st.markdown("""
-    <style>
-    .main-header {
-        font-size: 2.5rem;
-        color: #1E3A8A;
-        text-align: center;
-        margin-bottom: 1rem;
-    }
-    .sub-header {
-        color: #374151;
-        text-align: center;
-        margin-bottom: 2rem;
-    }
-    .stButton button {
-        width: 100%;
-        font-weight: bold;
-    }
-    .success-box {
-        background-color: #D1FAE5;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        border-left: 4px solid #10B981;
-    }
-    .error-box {
-        background-color: #FEE2E2;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        border-left: 4px solid #EF4444;
-    }
-    .info-box {
-        background-color: #DBEAFE;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        border-left: 4px solid #3B82F6;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-    
-    st.markdown('<h1 class="main-header">🎓 Automador de Relatórios - UFF Química</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">Geração automatizada de relatórios de evasão</p>', unsafe_allow_html=True)
+    st.title("🎓 Automador de Relatórios - UFF Química")
     st.markdown("---")
     
-    # Inicializar estado da sessão
-    if 'auth' not in st.session_state:
-        st.session_state.auth = None
+    # Inicializar estado
     if 'session' not in st.session_state:
         st.session_state.session = None
+        st.session_state.auth = None
     
     # Sidebar de login
     with st.sidebar:
-        st.header("🔐 Autenticação")
+        st.header("🔐 Login")
         
         if st.session_state.session is None:
-            st.markdown("### Credenciais UFF")
+            st.markdown("#### Credenciais UFF")
             
-            cpf = st.text_input(
-                "CPF:",
-                placeholder="Somente números",
-                help="Digite seu CPF sem pontuação (apenas números)"
-            )
+            cpf = st.text_input("CPF:", key="cpf_input", 
+                               help="Digite apenas números, sem pontuação")
+            senha = st.text_input("Senha:", type="password", key="senha_input")
             
-            senha = st.text_input(
-                "Senha:",
-                type="password",
-                placeholder="Sua senha do portal UFF"
-            )
-            
-            if st.button("🔑 Entrar no Portal", type="primary", use_container_width=True):
-                if not cpf or not senha:
-                    st.error("❌ CPF e senha são obrigatórios")
-                else:
+            if st.button("🚀 Entrar", use_container_width=True, type="primary"):
+                if cpf and senha:
                     with st.spinner("Autenticando..."):
-                        auth = UFFAuthenticator()
-                        if auth.login(cpf, senha):
+                        auth = LoginUFF()
+                        if auth.fazer_login(cpf, senha):
                             st.session_state.auth = auth
                             st.session_state.session = auth.get_session()
-                            st.success("✅ Autenticado!")
+                            st.success("✅ Conectado!")
                             st.rerun()
                         else:
                             st.error("❌ Falha na autenticação")
+                else:
+                    st.warning("⚠️ Preencha CPF e senha")
             
             st.markdown("---")
             st.markdown("""
-            ### ℹ️ Informações:
-            
-            **Requisitos:**
-            - Credenciais válidas do portal UFF
-            - Conexão com rede UFF ou VPN
-            - Navegador moderno
-            
-            **Suporte:**
-            - CPF: apenas números
-            - Senha: mesma do portal
+            **ℹ️ Ajuda:**
+            - Use suas credenciais do portal UFF
+            - Certifique-se de estar na rede UFF/VPN
+            - CPF apenas números (ex: 12345678901)
             """)
             
         else:
-            st.markdown('<div class="success-box">✅ Conectado ao portal UFF</div>', unsafe_allow_html=True)
-            
             # Verificar sessão
-            if st.session_state.auth and not st.session_state.auth.verify_session():
+            if st.session_state.auth and not st.session_state.auth.check_session():
                 st.warning("⚠️ Sessão expirada")
-                if st.button("🔄 Reconectar"):
-                    st.session_state.auth = None
+                if st.button("🔄 Reconectar", use_container_width=True):
                     st.session_state.session = None
+                    st.session_state.auth = None
                     st.rerun()
+            else:
+                st.success("✅ Conectado ao portal UFF")
             
             if st.button("🚪 Sair", use_container_width=True):
-                st.session_state.auth = None
                 st.session_state.session = None
+                st.session_state.auth = None
                 st.rerun()
-            
-            st.markdown("---")
-            st.markdown("""
-            ### 📊 Pronto para gerar relatórios
-            
-            **Próximos passos:**
-            1. Configure os filtros ao lado
-            2. Selecione períodos e cursos
-            3. Clique em gerar relatórios
-            """)
     
     # Conteúdo principal
     if st.session_state.session is None:
         col1, col2, col3 = st.columns([1, 2, 1])
-        
         with col2:
-            st.markdown('<div class="info-box">👈 Faça login na barra lateral para começar</div>', unsafe_allow_html=True)
+            st.info("👈 Faça login na barra lateral para começar")
             
-            st.markdown("### 🚀 Como usar:")
-            
-            with st.expander("📋 Passo a passo", expanded=True):
+            with st.expander("📋 Instruções detalhadas", expanded=True):
                 st.markdown("""
-                1. **Login** - Use seu CPF e senha UFF
-                2. **Configurar** - Selecione períodos e cursos
-                3. **Processar** - O sistema gera os relatórios
-                4. **Download** - Baixe a planilha consolidada
-                """)
-            
-            with st.expander("⚙️ Configurações suportadas"):
-                st.markdown("""
-                **Períodos:**
-                - 2025.1, 2025.2
-                - 2026.1, 2026.2
+                1. **Digite suas credenciais UFF** na barra lateral
+                2. **Clique em Entrar** para autenticar
+                3. **Configure os filtros** desejados
+                4. **Clique em Gerar Relatórios** para processar
+                5. **Baixe a planilha consolidada** ao final
                 
-                **Cursos (Química):**
-                - Licenciatura
-                - Bacharelado
-                - Industrial
-                
-                **Filtros automáticos:**
-                - Localidade: Niterói
-                - Formas de ingresso: SISU
-                """)
-            
-            with st.expander("⚠️ Solução de problemas"):
-                st.markdown("""
-                **Problemas comuns:**
-                
-                ❌ **Erro de autenticação:**
-                - Verifique CPF e senha
+                **Suporte técnico:**
                 - Certifique-se de estar na rede UFF
-                - Tente acessar manualmente o portal
-                
-                ⏱️ **Timeout:**
-                - Verifique conexão com internet
-                - Tente novamente mais tarde
-                
-                🔄 **Sessão expirada:**
-                - Clique em Sair e faça login novamente
+                - Verifique se suas credenciais estão corretas
+                - Em caso de erro, tente novamente em alguns minutos
                 """)
     
     else:
-        # Interface para geração de relatórios
+        # Interface de configuração
         st.header("⚙️ Configuração dos Relatórios")
         
         col1, col2 = st.columns(2)
@@ -836,154 +657,127 @@ def main():
             periodo_inicio = st.selectbox(
                 "Período Inicial",
                 options=['2025.1', '2025.2', '2026.1', '2026.2'],
-                index=0,
-                help="Selecione o período inicial da consulta"
+                index=0
             )
         
         with col2:
             periodo_fim = st.selectbox(
                 "Período Final",
                 options=['2025.1', '2025.2', '2026.1', '2026.2'],
-                index=2,
-                help="Selecione o período final da consulta"
+                index=2
             )
         
         cursos_selecionados = st.multiselect(
             "Selecione os cursos:",
             options=list(DESDOBRAMENTOS_CURSOS.keys()),
-            default=list(DESDOBRAMENTOS_CURSOS.keys()),
-            help="Selecione um ou mais cursos para gerar relatórios"
+            default=list(DESDOBRAMENTOS_CURSOS.keys())
         )
         
         st.markdown("---")
         
-        # Botão de ação principal
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            if st.button(
-                "🚀 GERAR RELATÓRIOS COMPLETOS",
-                type="primary",
-                use_container_width=True,
-                help="Clique para iniciar a geração dos relatórios"
-            ):
-                if not cursos_selecionados:
-                    st.error("❌ Selecione pelo menos um curso!")
-                else:
-                    # Verificar sessão
-                    if not st.session_state.auth.verify_session():
-                        st.error("❌ Sessão expirada. Faça login novamente.")
-                        st.session_state.auth = None
-                        st.session_state.session = None
-                        st.rerun()
+        # Botão principal
+        if st.button("🚀 GERAR RELATÓRIOS", type="primary", use_container_width=True):
+            if not cursos_selecionados:
+                st.error("❌ Selecione pelo menos um curso!")
+                return
+            
+            # Verificar sessão
+            if not st.session_state.auth.check_session():
+                st.error("❌ Sessão expirada. Faça login novamente.")
+                st.session_state.session = None
+                st.session_state.auth = None
+                st.rerun()
+                return
+            
+            # Converter períodos
+            def converter_periodo(periodo):
+                ano, semestre = periodo.split('.')
+                return f"{ano}/{semestre}°"
+            
+            periodo_inicio_fmt = converter_periodo(periodo_inicio)
+            periodo_fim_fmt = converter_periodo(periodo_fim)
+            
+            periodos = [periodo_inicio_fmt, periodo_fim_fmt]
+            
+            # Iniciar processamento
+            gerador = GeradorRelatorios(st.session_state.session)
+            todos_dados = []
+            
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            total_relatorios = len(periodos) * len(cursos_selecionados)
+            relatorio_atual = 0
+            
+            try:
+                for periodo in periodos:
+                    semestre = '1' if '1°' in periodo else '2'
+                    forma_ingresso = FORMAS_INGRESSO[semestre]
                     
-                    # Converter períodos
-                    def converter_periodo(periodo):
-                        ano, semestre = periodo.split('.')
-                        return f"{ano}/{semestre}°"
-                    
-                    periodo_inicio_fmt = converter_periodo(periodo_inicio)
-                    periodo_fim_fmt = converter_periodo(periodo_fim)
-                    
-                    periodos = [periodo_inicio_fmt, periodo_fim_fmt]
-                    
-                    # Iniciar geração
-                    gerador = GeradorRelatorios(st.session_state.session)
-                    todos_dados = []
-                    
-                    # Configurar interface de progresso
-                    progress_bar = st.progress(0)
-                    status_text = st.empty()
-                    resultados_container = st.container()
-                    
-                    total_relatorios = len(periodos) * len(cursos_selecionados)
-                    relatorio_atual = 0
-                    
-                    try:
-                        with resultados_container:
-                            for periodo in periodos:
-                                semestre = '1' if '1°' in periodo else '2'
-                                forma_ingresso = FORMAS_INGRESSO[semestre]
-                                
-                                for curso_key in cursos_selecionados:
-                                    relatorio_atual += 1
-                                    
-                                    curso_info = DESDOBRAMENTOS_CURSOS[curso_key]
-                                    
-                                    def callback_progresso(msg, pct):
-                                        progresso_total = ((relatorio_atual - 1) * 100 + pct) / total_relatorios
-                                        status_text.text(f"{relatorio_atual}/{total_relatorios} - {curso_key} - {periodo}: {msg}")
-                                        progress_bar.progress(progresso_total / 100)
-                                    
-                                    try:
-                                        # Preparar filtros
-                                        filtros = {
-                                            'report_filter_localidade': 'Niterói',
-                                            'report_filter_curso': curso_info['buscar_por'],
-                                            'report_filter_desdobramento': curso_info['valor'],
-                                            'report_filter_forma_ingresso': forma_ingresso,
-                                            'report_filter_ano_semestre_ingresso': periodo
-                                        }
-                                        
-                                        # Gerar relatório
-                                        conteudo_excel = gerador.gerar_relatorio_completo(filtros, callback_progresso)
-                                        
-                                        # Processar dados
-                                        df = pd.read_excel(io.BytesIO(conteudo_excel))
-                                        df['curso'] = curso_key
-                                        df['periodo'] = periodo
-                                        todos_dados.append(df)
-                                        
-                                        st.success(f"✅ {curso_key} - {periodo}: Relatório gerado com sucesso!")
-                                        
-                                    except Exception as e:
-                                        st.error(f"❌ {curso_key} - {periodo}: {str(e)[:100]}")
-                                        logger.error(f"Erro em {curso_key}-{periodo}: {e}")
-                            
-                            # Consolidar resultados
-                            if todos_dados:
-                                status_text.text("Consolidando dados...")
-                                progress_bar.progress(0.95)
-                                
-                                df_consolidado = pd.concat(todos_dados, ignore_index=True)
-                                
-                                # Gerar arquivo Excel
-                                output = io.BytesIO()
-                                with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                                    df_consolidado.to_excel(writer, sheet_name='Dados Consolidados', index=False)
-                                
-                                output.seek(0)
-                                
-                                # Botão de download
-                                st.markdown("---")
-                                st.markdown("### 📥 Download")
-                                
-                                st.download_button(
-                                    label="⬇️ BAIXAR PLANILHA CONSOLIDADA",
-                                    data=output.getvalue(),
-                                    file_name=f"relatorios_uff_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                    use_container_width=True
-                                )
-                                
-                                progress_bar.progress(1.0)
-                                status_text.text("✅ Processo concluído!")
-                                
-                                # Mostrar estatísticas
-                                st.markdown("### 📊 Estatísticas")
-                                col1, col2, col3 = st.columns(3)
-                                with col1:
-                                    st.metric("Total de Registros", len(df_consolidado))
-                                with col2:
-                                    st.metric("Cursos Processados", len(cursos_selecionados))
-                                with col3:
-                                    st.metric("Períodos", len(periodos))
-                            
-                            else:
-                                st.error("❌ Nenhum relatório foi gerado com sucesso")
+                    for curso_key in cursos_selecionados:
+                        relatorio_atual += 1
                         
-                    except Exception as e:
-                        st.error(f"❌ Erro geral: {str(e)}")
-                        logger.error(f"Erro geral: {e}", exc_info=True)
+                        curso_info = DESDOBRAMENTOS_CURSOS[curso_key]
+                        
+                        def callback_progresso(msg, pct):
+                            progresso_total = ((relatorio_atual - 1) * 100 + pct) / total_relatorios
+                            status_text.text(f"{relatorio_atual}/{total_relatorios} - {curso_key}: {msg}")
+                            progress_bar.progress(progresso_total / 100)
+                        
+                        try:
+                            # Preparar filtros
+                            filtros = {
+                                'report_filter_localidade': 'Niterói',
+                                'report_filter_curso': curso_info['buscar_por'],
+                                'report_filter_desdobramento': curso_info['valor'],
+                                'report_filter_forma_ingresso': forma_ingresso,
+                                'report_filter_ano_semestre_ingresso': periodo
+                            }
+                            
+                            # Gerar relatório
+                            conteudo_excel = gerador.gerar_relatorio_completo(filtros, callback_progresso)
+                            
+                            # Processar dados
+                            df = pd.read_excel(io.BytesIO(conteudo_excel))
+                            df['curso'] = curso_key
+                            df['periodo'] = periodo
+                            todos_dados.append(df)
+                            
+                            st.success(f"✅ {curso_key} - {periodo}: Relatório gerado")
+                            
+                        except Exception as e:
+                            st.error(f"❌ {curso_key} - {periodo}: Erro ao gerar relatório")
+                            logger.error(f"Erro: {e}")
+                
+                # Consolidar resultados
+                if todos_dados:
+                    df_consolidado = pd.concat(todos_dados, ignore_index=True)
+                    
+                    # Gerar arquivo
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        df_consolidado.to_excel(writer, sheet_name='Dados Consolidados', index=False)
+                    
+                    output.seek(0)
+                    
+                    # Botão de download
+                    st.download_button(
+                        label="📥 BAIXAR PLANILHA CONSOLIDADA",
+                        data=output.getvalue(),
+                        file_name=f"relatorios_uff_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
+                    
+                    progress_bar.progress(1.0)
+                    status_text.text("✅ Processo concluído!")
+                    
+                else:
+                    st.error("❌ Nenhum relatório foi gerado com sucesso")
+                
+            except Exception as e:
+                st.error(f"❌ Erro geral: {str(e)}")
+                logger.error(f"Erro geral: {e}")
 
 
 if __name__ == "__main__":
