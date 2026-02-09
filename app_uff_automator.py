@@ -1,6 +1,6 @@
 """
 Automador de Relatórios - UFF Química
-Versão: Análise completa do formulário primeiro
+Versão: Com nomes corretos dos campos baseado na análise
 """
 
 import streamlit as st
@@ -13,11 +13,10 @@ import logging
 from datetime import datetime
 from urllib.parse import urljoin, urlparse
 import io
-import json
 
 # Configurar logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
@@ -34,8 +33,33 @@ HEADERS = {
     'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
 }
 
+# Mapeamento CORRETO baseado na análise
+CURSOS_QUIMICA = {
+    'Licenciatura': {
+        'nome_curso': 'Química',
+        'id_desdobramento': '12700',  # Precisa confirmar este valor
+        'id_curso': '12700',  # Valor a ser descoberto após selecionar localidade
+    },
+    'Bacharelado': {
+        'nome_curso': 'Química',
+        'id_desdobramento': '312700',  # Precisa confirmar este valor
+        'id_curso': '312700',  # Valor a ser descoberto após selecionar localidade
+    },
+    'Industrial': {
+        'nome_curso': 'Química Industrial',
+        'id_desdobramento': '12709',  # Precisa confirmar este valor
+        'id_curso': '12709',  # Valor a ser descoberto após selecionar localidade
+    }
+}
+
+# Formas de ingresso - Valores reais do select idformaingresso
+FORMAS_INGRESSO = {
+    '1': '1',  # SISU 1ª Edição - PRECISA CONFIRMAR O VALOR EXATO
+    '2': '2'   # SISU 2ª Edição - PRECISA CONFIRMAR O VALOR EXATO
+}
+
 class LoginUFF:
-    """Classe de login - JÁ FUNCIONANDO"""
+    """Classe de login"""
     
     def __init__(self):
         self.session = requests.Session()
@@ -47,13 +71,11 @@ class LoginUFF:
         try:
             st.info("Conectando ao portal UFF...")
             
-            # Acessar a página inicial
             response = self.session.get(APLICACAO_URL, timeout=TIMEOUT_REQUESTS)
             
             if response.status_code != 200:
                 return False
             
-            # Extrair parâmetros
             soup = BeautifulSoup(response.text, 'html.parser')
             login_form = soup.find('form', {'id': 'kc-form-login'}) or soup.find('form', method='post')
             
@@ -65,21 +87,18 @@ class LoginUFF:
                 parsed_base = urlparse(BASE_URL)
                 action_url = f"{parsed_base.scheme}://{parsed_base.netloc}{action_url}"
             
-            # Preparar dados
             form_data = {
                 'username': cpf,
                 'password': senha,
                 'rememberMe': 'on'
             }
             
-            # Adicionar campos hidden
             for input_tag in login_form.find_all('input', type='hidden'):
                 name = input_tag.get('name', '')
                 value = input_tag.get('value', '')
                 if name:
                     form_data[name] = value
             
-            # Enviar requisição
             headers = {
                 'User-Agent': HEADERS['User-Agent'],
                 'Referer': response.url,
@@ -95,7 +114,6 @@ class LoginUFF:
                 timeout=TIMEOUT_REQUESTS
             )
             
-            # Verificar sucesso
             if 'administracaoacademica' in login_response.url and login_response.status_code == 200:
                 self.is_authenticated = True
                 st.success("✅ Login realizado com sucesso!")
@@ -112,414 +130,235 @@ class LoginUFF:
         return self.session if self.is_authenticated else None
 
 
-class AnalisadorFormulario:
-    """Classe para analisar o formulário de relatórios"""
+class GeradorRelatorios:
+    """Classe para gerar relatórios com campos corretos"""
     
     def __init__(self, session):
         self.session = session
+        self.base_url = APLICACAO_URL
     
-    def analisar_pagina_relatorios(self):
-        """Analisa completamente a página de relatórios"""
+    def obter_cursos_para_localidade(self, id_localidade='1'):
+        """Obtém cursos disponíveis para uma localidade específica"""
         try:
-            url = f"{APLICACAO_URL}/relatorios/listagens_alunos"
-            logger.info(f"Acessando página: {url}")
-            
-            response = self.session.get(url, timeout=15)
-            response.raise_for_status()
-            
-            # Salvar HTML para análise
-            with open('pagina_relatorios_completa.html', 'w', encoding='utf-8') as f:
-                f.write(response.text)
-            logger.info("Página salva em: pagina_relatorios_completa.html")
-            
+            # Primeiro precisamos selecionar a localidade
+            url = f"{self.base_url}/relatorios/listagens_alunos"
+            response = self.session.get(url, timeout=10)
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # 1. Encontrar todos os formulários
-            forms = soup.find_all('form')
-            logger.info(f"Total de formulários encontrados: {len(forms)}")
+            # Encontrar o formulário
+            form = soup.find('form')
+            if not form:
+                return {}
             
-            relatorios_form = None
-            for i, form in enumerate(forms):
-                action = form.get('action', '').lower()
-                form_id = form.get('id', '').lower()
-                form_name = form.get('name', '').lower()
-                
-                logger.info(f"Formulário {i}:")
-                logger.info(f"  ID: {form_id}")
-                logger.info(f"  Name: {form_name}")
-                logger.info(f"  Action: {action}")
-                logger.info(f"  Method: {form.get('method', 'GET')}")
-                
-                # Critérios para identificar formulário de relatórios
-                if 'listagens_alunos' in action or 'relatorios' in action:
-                    relatorios_form = form
-                    break
-                elif any(keyword in form_id for keyword in ['relatorio', 'report', 'filter']):
-                    relatorios_form = form
-                    break
-                elif any(keyword in form_name for keyword in ['relatorio', 'report', 'filter']):
-                    relatorios_form = form
+            # Extrair token CSRF
+            token = None
+            for input_tag in form.find_all('input'):
+                if input_tag.get('name') == 'authenticity_token':
+                    token = input_tag.get('value', '')
                     break
             
-            if not relatorios_form and forms:
-                logger.warning("Usando primeiro formulário encontrado")
-                relatorios_form = forms[0]
+            if not token:
+                return {}
             
-            if not relatorios_form:
-                raise Exception("Nenhum formulário encontrado")
+            # Montar requisição para obter cursos
+            dados = {
+                'authenticity_token': token,
+                'idlocalidade': id_localidade,
+                'commit': 'Filtrar'
+            }
             
-            # 2. Analisar estrutura do formulário
-            analise = self.analisar_formulario_detalhado(relatorios_form)
+            # Enviar requisição AJAX para carregar cursos
+            response = self.session.post(
+                url,
+                data=dados,
+                timeout=10,
+                headers={
+                    'Referer': url,
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            )
             
-            # 3. Salvar análise em JSON
-            with open('analise_formulario.json', 'w', encoding='utf-8') as f:
-                json.dump(analise, f, indent=2, ensure_ascii=False)
+            # Tentar extrair cursos da resposta
+            # Esta parte pode precisar de ajuste dependendo da resposta
+            cursos = {}
             
-            logger.info("Análise do formulário salva em: analise_formulario.json")
+            # Se a resposta for HTML, tentar extrair options
+            if 'text/html' in response.headers.get('content-type', ''):
+                soup_resposta = BeautifulSoup(response.text, 'html.parser')
+                select_curso = soup_resposta.find('select', {'id': 'idcurso'})
+                if select_curso:
+                    for option in select_curso.find_all('option'):
+                        if option.get('value') and option.get('value').strip():
+                            cursos[option.get('value')] = option.get_text(strip=True)
             
-            return analise
+            return cursos
             
         except Exception as e:
-            logger.error(f"Erro ao analisar página: {e}")
-            raise
+            logger.error(f"Erro ao obter cursos: {e}")
+            return {}
     
-    def analisar_formulario_detalhado(self, form):
-        """Analisa detalhadamente um formulário"""
-        analise = {
-            'action': form.get('action', ''),
-            'method': form.get('method', 'get').upper(),
-            'inputs': [],
-            'selects': [],
-            'textareas': [],
-            'buttons': []
-        }
-        
-        # Analisar inputs
-        for input_tag in form.find_all('input'):
-            input_info = {
-                'type': input_tag.get('type', 'text'),
-                'name': input_tag.get('name', ''),
-                'value': input_tag.get('value', ''),
-                'id': input_tag.get('id', ''),
-                'class': input_tag.get('class', []),
-                'required': 'required' in input_tag.attrs,
-                'placeholder': input_tag.get('placeholder', ''),
-                'maxlength': input_tag.get('maxlength', ''),
-                'size': input_tag.get('size', '')
-            }
-            analise['inputs'].append(input_info)
-        
-        # Analisar selects
-        for select_tag in form.find_all('select'):
-            select_info = {
-                'name': select_tag.get('name', ''),
-                'id': select_tag.get('id', ''),
-                'class': select_tag.get('class', []),
-                'required': 'required' in select_tag.attrs,
-                'multiple': 'multiple' in select_tag.attrs,
-                'size': select_tag.get('size', ''),
-                'options': []
-            }
-            
-            for option in select_tag.find_all('option'):
-                option_info = {
-                    'value': option.get('value', ''),
-                    'text': option.get_text(strip=True),
-                    'selected': 'selected' in option.attrs
-                }
-                select_info['options'].append(option_info)
-            
-            analise['selects'].append(select_info)
-        
-        # Analisar textareas
-        for textarea_tag in form.find_all('textarea'):
-            textarea_info = {
-                'name': textarea_tag.get('name', ''),
-                'id': textarea_tag.get('id', ''),
-                'class': textarea_tag.get('class', []),
-                'required': 'required' in textarea_tag.attrs,
-                'placeholder': textarea_tag.get('placeholder', ''),
-                'rows': textarea_tag.get('rows', ''),
-                'cols': textarea_tag.get('cols', ''),
-                'value': textarea_tag.get_text(strip=True)
-            }
-            analise['textareas'].append(textarea_info)
-        
-        # Analisar buttons
-        for button_tag in form.find_all('button'):
-            button_info = {
-                'type': button_tag.get('type', 'submit'),
-                'name': button_tag.get('name', ''),
-                'value': button_tag.get('value', ''),
-                'id': button_tag.get('id', ''),
-                'class': button_tag.get('class', []),
-                'text': button_tag.get_text(strip=True)
-            }
-            analise['buttons'].append(button_info)
-        
-        return analise
-    
-    def testar_submissao_simples(self, analise):
-        """Testa submissão com valores mínimos"""
+    def gerar_relatorio(self, filtros):
+        """Gera um relatório com os filtros fornecidos"""
         try:
-            # Construir URL completa
-            action_url = analise['action']
-            if not action_url.startswith('http'):
-                action_url = urljoin(APLICACAO_URL, action_url)
+            logger.info("Iniciando geração de relatório...")
             
-            # Preparar dados mínimos
-            dados = {}
+            # 1. Acessar página de listagem
+            url = f"{self.base_url}/relatorios/listagens_alunos"
+            response = self.session.get(url, timeout=10)
+            soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Adicionar inputs hidden
-            for input_info in analise['inputs']:
-                if input_info['type'] == 'hidden' and input_info['value']:
-                    dados[input_info['name']] = input_info['value']
+            # 2. Encontrar formulário e extrair token
+            form = soup.find('form')
+            if not form:
+                raise Exception("Formulário não encontrado")
             
-            # Adicionar campos obrigatórios dos selects
-            for select_info in analise['selects']:
-                if select_info['required'] and select_info['options']:
-                    # Usar primeira opção não vazia
-                    for option in select_info['options']:
-                        if option['value']:
-                            dados[select_info['name']] = option['value']
-                            break
-            
-            # Adicionar botão submit se existir
-            for button_info in analise['buttons']:
-                if button_info['type'] == 'submit' and button_info['name']:
-                    dados[button_info['name']] = button_info['value'] or 'Submit'
+            token = None
+            for input_tag in form.find_all('input'):
+                if input_tag.get('name') == 'authenticity_token':
+                    token = input_tag.get('value', '')
                     break
             
-            logger.info(f"Testando submissão com {len(dados)} campos")
-            logger.info(f"Campos: {list(dados.keys())}")
+            if not token:
+                raise Exception("Token CSRF não encontrado")
             
-            # Enviar requisição
+            logger.info(f"Token CSRF encontrado: {token[:20]}...")
+            
+            # 3. Preparar dados do formulário com campos CORRETOS
+            dados_formulario = {
+                'authenticity_token': token,
+                'commit': 'Gerar Relatório'  # Nome do botão submit
+            }
+            
+            # 4. Adicionar filtros
+            # Campos OBRIGATÓRIOS baseados na análise:
+            # - idlocalidade: ID da localidade (1 = Niterói)
+            # - idcurso: ID do curso (precisa ser selecionado após localidade)
+            # - iddesdobramento: ID do desdobramento (especialização do curso)
+            
+            # Adicionar filtros fornecidos
+            for campo, valor in filtros.items():
+                dados_formulario[campo] = valor
+            
+            logger.info(f"Dados do formulário: {dados_formulario}")
+            
+            # 5. Submeter formulário
             response = self.session.post(
-                action_url,
-                data=dados,
+                url,
+                data=dados_formulario,
                 timeout=30,
                 allow_redirects=True,
                 headers={
-                    'Referer': f"{APLICACAO_URL}/relatorios/listagens_alunos",
+                    'Referer': url,
                     'Content-Type': 'application/x-www-form-urlencoded',
                 }
             )
             
-            logger.info(f"Status: {response.status_code}")
+            logger.info(f"Status da resposta: {response.status_code}")
             logger.info(f"URL após submissão: {response.url}")
             
-            # Salvar resposta
-            with open('resposta_teste.html', 'w', encoding='utf-8') as f:
-                f.write(response.text)
-            
-            return {
-                'success': response.status_code == 200,
-                'status_code': response.status_code,
-                'redirected': len(response.history) > 0,
-                'final_url': response.url
-            }
-            
-        except Exception as e:
-            logger.error(f"Erro no teste: {e}")
-            return {'success': False, 'error': str(e)}
-
-
-class GeradorRelatorios:
-    """Classe para gerar relatórios após análise"""
-    
-    def __init__(self, session):
-        self.session = session
-        self.analisador = AnalisadorFormulario(session)
-    
-    def gerar_relatorio(self, filtros_personalizados=None):
-        """Gera relatório com base na análise"""
-        try:
-            # 1. Analisar formulário primeiro
-            st.info("🔍 Analisando formulário de relatórios...")
-            analise = self.analisador.analisar_pagina_relatorios()
-            
-            # 2. Mostrar análise para o usuário
-            st.info("📋 Estrutura do formulário encontrada:")
-            
-            with st.expander("📝 Campos do formulário", expanded=True):
-                # Mostrar selects
-                if analise['selects']:
-                    st.subheader("Selects disponíveis:")
-                    for select in analise['selects']:
-                        st.write(f"**{select['name']}** ({'obrigatório' if select['required'] else 'opcional'}):")
-                        # Mostrar algumas opções
-                        options_text = []
-                        for option in select['options'][:5]:  # Mostrar apenas 5 primeiras
-                            options_text.append(f"'{option['value']}' → '{option['text']}'")
-                        
-                        if len(select['options']) > 5:
-                            options_text.append(f"... e mais {len(select['options']) - 5} opções")
-                        
-                        st.text("\n".join(options_text))
+            # 6. Verificar se foi bem-sucedido
+            if response.status_code != 200:
+                logger.error(f"Erro na submissão: {response.status_code}")
                 
-                # Mostrar inputs importantes
-                if analise['inputs']:
-                    st.subheader("Inputs importantes:")
-                    important_inputs = [i for i in analise['inputs'] if i['type'] in ['hidden', 'text', 'number']]
-                    for input_info in important_inputs[:10]:  # Mostrar até 10
-                        st.write(f"**{input_info['name']}** (tipo: {input_info['type']}): {input_info['value'][:50]}...")
+                # Salvar resposta para debug
+                with open('erro_submissao.html', 'w', encoding='utf-8') as f:
+                    f.write(response.text)
+                
+                # Tentar extrair mensagem de erro
+                soup_erro = BeautifulSoup(response.text, 'html.parser')
+                erros = soup_erro.find_all(['div', 'p'], class_=lambda x: x and 'error' in str(x).lower())
+                for erro in erros:
+                    logger.error(f"Mensagem de erro: {erro.get_text(strip=True)}")
+                
+                raise Exception(f"Erro {response.status_code} na submissão")
             
-            # 3. Testar submissão simples
-            st.info("🧪 Testando submissão básica...")
-            resultado_teste = self.analisador.testar_submissao_simples(analise)
-            
-            if resultado_teste['success']:
-                st.success("✅ Teste básico bem-sucedido!")
-                # Agora podemos tentar com filtros específicos
-                return self.gerar_com_filtros(analise, filtros_personalizados)
+            # 7. Extrair ID do relatório
+            match = re.search(r'/relatorios/(\d+)', response.url)
+            if match:
+                relatorio_id = match.group(1)
+                logger.info(f"✅ Relatório criado com ID: {relatorio_id}")
+                
+                # 8. Aguardar processamento e baixar
+                return self.baixar_relatorio(relatorio_id)
             else:
-                st.error(f"❌ Teste básico falhou: Status {resultado_teste.get('status_code')}")
-                st.info("📁 Arquivos salvos para análise:")
-                st.info("- pagina_relatorios_completa.html: Página completa")
-                st.info("- analise_formulario.json: Análise estruturada")
-                st.info("- resposta_teste.html: Resposta do servidor")
+                # Verificar se há link para o relatório na página
+                soup_resposta = BeautifulSoup(response.text, 'html.parser')
+                relatorio_link = soup_resposta.find('a', href=re.compile(r'/relatorios/\d+'))
+                if relatorio_link:
+                    href = relatorio_link.get('href', '')
+                    match = re.search(r'/relatorios/(\d+)', href)
+                    if match:
+                        relatorio_id = match.group(1)
+                        logger.info(f"✅ Relatório encontrado via link: {relatorio_id}")
+                        return self.baixar_relatorio(relatorio_id)
                 
-                return None
-                
+                raise Exception("ID do relatório não encontrado")
+            
         except Exception as e:
-            st.error(f"❌ Erro ao gerar relatório: {str(e)}")
-            logger.error(f"Erro: {e}", exc_info=True)
-            return None
+            logger.error(f"Erro ao gerar relatório: {e}")
+            raise
     
-    def gerar_com_filtros(self, analise, filtros_personalizados):
-        """Gera relatório com filtros específicos"""
-        try:
-            # Construir URL
-            action_url = analise['action']
-            if not action_url.startswith('http'):
-                action_url = urljoin(APLICACAO_URL, action_url)
-            
-            # Preparar dados base
-            dados = {}
-            
-            # Adicionar todos os campos hidden
-            for input_info in analise['inputs']:
-                if input_info['type'] == 'hidden' and input_info['value'] and input_info['name']:
-                    dados[input_info['name']] = input_info['value']
-            
-            # Aplicar filtros personalizados
-            if filtros_personalizados:
-                for campo, valor in filtros_personalizados.items():
-                    # Verificar se campo existe no formulário
-                    campo_encontrado = False
-                    
-                    # Verificar em selects
-                    for select in analise['selects']:
-                        if select['name'] == campo:
-                            # Verificar se valor é válido
-                            for option in select['options']:
-                                if option['value'] == str(valor) or str(valor) in option['text']:
-                                    dados[campo] = option['value']
-                                    campo_encontrado = True
-                                    logger.info(f"Filtro aplicado em select: {campo} = {option['value']}")
-                                    break
-                    
-                    # Verificar em inputs
-                    if not campo_encontrado:
-                        for input_info in analise['inputs']:
-                            if input_info['name'] == campo:
-                                dados[campo] = valor
-                                campo_encontrado = True
-                                logger.info(f"Filtro aplicado em input: {campo} = {valor}")
-                                break
-                    
-                    if not campo_encontrado:
-                        logger.warning(f"Campo não encontrado no formulário: {campo}")
-            
-            # Adicionar botão submit
-            for button_info in analise['buttons']:
-                if button_info['type'] == 'submit' and button_info['name']:
-                    dados[button_info['name']] = button_info['value'] or 'Submit'
-                    break
-            
-            logger.info(f"Submetendo com {len(dados)} campos")
-            
-            # Enviar requisição
-            response = self.session.post(
-                action_url,
-                data=dados,
-                timeout=30,
-                allow_redirects=True,
-                headers={
-                    'Referer': f"{APLICACAO_URL}/relatorios/listagens_alunos",
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                }
-            )
-            
-            if response.status_code == 200:
-                # Extrair ID do relatório
-                match = re.search(r'/relatorios/(\d+)', response.url)
-                if match:
-                    relatorio_id = match.group(1)
-                    st.success(f"✅ Relatório criado! ID: {relatorio_id}")
-                    
-                    # Aguardar e baixar relatório
-                    return self.processar_relatorio(relatorio_id)
-                else:
-                    st.warning("Relatório criado, mas ID não encontrado na URL")
-                    return None
-            else:
-                st.error(f"❌ Erro na submissão: Status {response.status_code}")
-                return None
-                
-        except Exception as e:
-            st.error(f"❌ Erro: {str(e)}")
-            return None
-    
-    def processar_relatorio(self, relatorio_id):
+    def baixar_relatorio(self, relatorio_id):
         """Aguarda e baixa o relatório"""
         try:
-            st.info(f"⏳ Aguardando relatório {relatorio_id}...")
+            logger.info(f"Aguardando relatório {relatorio_id}...")
             
-            # Verificar status
-            url = f"{BASE_URL}/relatorios/{relatorio_id}"
+            url_status = f"{BASE_URL}/relatorios/{relatorio_id}"
             
-            for tentativa in range(30):  # 30 tentativas com 3 segundos cada = 90 segundos
-                response = self.session.get(url, timeout=10)
+            # Aguardar até 2 minutos (40 tentativas de 3 segundos)
+            for tentativa in range(40):
+                response = self.session.get(url_status, timeout=10)
                 soup = BeautifulSoup(response.text, 'html.parser')
                 
-                # Procurar link de download
-                download_link = soup.find('a', href=lambda x: x and '.xlsx' in x)
+                # Procurar link de download Excel
+                download_link = soup.find('a', href=lambda x: x and '.xlsx' in str(x))
+                
                 if download_link:
                     download_url = urljoin(BASE_URL, download_link.get('href'))
+                    logger.info(f"✅ Relatório pronto! Baixando de: {download_url}")
                     
                     # Baixar arquivo
-                    st.info("📥 Baixando arquivo...")
                     file_response = self.session.get(download_url, timeout=30)
                     file_response.raise_for_status()
                     
-                    st.success("✅ Arquivo baixado com sucesso!")
+                    logger.info(f"✅ Arquivo baixado! Tamanho: {len(file_response.content)} bytes")
                     return file_response.content
+                
+                # Verificar mensagens de processamento
+                if "processando" in response.text.lower() or "gerando" in response.text.lower():
+                    logger.info(f"Aguardando... ({tentativa + 1}/40)")
+                else:
+                    # Verificar se há erro
+                    if "erro" in response.text.lower() or "error" in response.text.lower():
+                        erro_div = soup.find(['div', 'p'], class_=lambda x: x and 'error' in str(x).lower())
+                        if erro_div:
+                            raise Exception(f"Erro no processamento: {erro_div.get_text(strip=True)}")
                 
                 time.sleep(3)  # Aguardar 3 segundos
             
-            st.error("⏱️ Timeout aguardando relatório")
-            return None
+            raise Exception(f"Timeout aguardando relatório {relatorio_id}")
             
         except Exception as e:
-            st.error(f"❌ Erro ao processar relatório: {str(e)}")
-            return None
+            logger.error(f"Erro ao baixar relatório: {e}")
+            raise
 
 
 def main():
     """Aplicação principal"""
     st.set_page_config(
-        page_title="Automador de Relatórios UFF",
+        page_title="Automador de Relatórios UFF - Química",
         layout="wide"
     )
     
-    st.title("🔍 Analisador de Relatórios UFF")
+    st.title("🎓 Automador de Relatórios - UFF Química")
     st.markdown("---")
     
     # Inicializar estado
     if 'session' not in st.session_state:
         st.session_state.session = None
         st.session_state.auth = None
+        st.session_state.cursos_disponiveis = {}
     
     # Sidebar de login
     with st.sidebar:
@@ -546,123 +385,234 @@ def main():
             if st.button("Sair", use_container_width=True):
                 st.session_state.session = None
                 st.session_state.auth = None
+                st.session_state.cursos_disponiveis = {}
                 st.rerun()
     
     # Conteúdo principal
     if st.session_state.session is None:
         st.info("👈 Faça login para começar")
     else:
-        st.header("📊 Geração de Relatórios")
+        st.header("⚙️ Configuração do Relatório")
         
-        # Primeiro, análise do formulário
-        if st.button("🔍 Analisar Formulário de Relatórios", use_container_width=True):
-            with st.spinner("Analisando..."):
-                analisador = AnalisadorFormulario(st.session_state.session)
-                
-                try:
-                    analise = analisador.analisar_pagina_relatorios()
-                    
-                    # Mostrar resumo
-                    st.success("✅ Análise concluída!")
-                    
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Campos Input", len(analise['inputs']))
-                    with col2:
-                        st.metric("Campos Select", len(analise['selects']))
-                    with col3:
-                        st.metric("Campos Textarea", len(analise['textareas']))
-                    
-                    # Mostrar selects importantes
-                    st.subheader("📋 Campos de Filtro (Selects):")
-                    
-                    for select in analise['selects']:
-                        with st.expander(f"🔽 {select.get('name', 'Sem nome')}", expanded=False):
-                            st.write(f"**ID:** {select.get('id', 'N/A')}")
-                            st.write(f"**Obrigatório:** {'Sim' if select['required'] else 'Não'}")
-                            
-                            # Criar tabela com opções
-                            if select['options']:
-                                opcoes_data = []
-                                for i, option in enumerate(select['options'][:20]):  # Mostrar até 20
-                                    opcoes_data.append({
-                                        'Valor': option['value'],
-                                        'Texto': option['text'],
-                                        'Selecionado': 'Sim' if option['selected'] else 'Não'
-                                    })
-                                
-                                if opcoes_data:
-                                    st.table(pd.DataFrame(opcoes_data))
-                                
-                                if len(select['options']) > 20:
-                                    st.info(f"... e mais {len(select['options']) - 20} opções")
-                    
-                    # Testar submissão simples
-                    st.subheader("🧪 Teste de Submissão")
-                    if st.button("Testar Submissão Simples", type="secondary"):
-                        resultado = analisador.testar_submissao_simples(analise)
+        # Explicação dos campos corretos
+        with st.expander("📋 Campos do formulário (baseado na análise)", expanded=True):
+            st.markdown("""
+            **Campos identificados na análise:**
+            
+            1. **idlocalidade** - Localidade (1 = Niterói)
+            2. **idcurso** - Curso (depende da localidade)
+            3. **iddesdobramento** - Desdobramento/Especialização do curso
+            4. **idformaingresso** - Forma de ingresso
+            5. **anosem_ingresso** - Ano/Semestre de ingresso (ex: 20251 = 2025/1º)
+            
+            **Campos opcionais:**
+            - idturno, idstatusaluno, idsituacaoaluno, idacaoafirmativa, etc.
+            """)
+        
+        # Configuração básica
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            periodo = st.selectbox(
+                "Período de Ingresso",
+                options=['2025/1º', '2025/2º', '2026/1º', '2026/2º'],
+                index=0,
+                help="Formato: 20251 = 2025/1º, 20252 = 2025/2º"
+            )
+            
+            # Converter para o formato do sistema
+            def converter_periodo(periodo_str):
+                # "2025/1º" -> "20251"
+                # "2025/2º" -> "20252"
+                partes = periodo_str.split('/')
+                ano = partes[0]
+                semestre = partes[1][0]  # Pega apenas o número
+                return f"{ano}{semestre}"
+            
+            periodo_codigo = converter_periodo(periodo)
+        
+        with col2:
+            curso_selecionado = st.selectbox(
+                "Curso",
+                options=list(CURSOS_QUIMICA.keys()),
+                index=0
+            )
+        
+        # Forma de ingresso
+        forma_ingresso = st.selectbox(
+            "Forma de Ingresso",
+            options=['SISU 1ª Edição', 'SISU 2ª Edição', 'Vestibular', 'Transferência'],
+            index=0,
+            help="Precisamos descobrir os valores exatos do select 'idformaingresso'"
+        )
+        
+        # Mapear forma de ingresso para código (PRECISA SER CONFIRMADO)
+        forma_ingresso_map = {
+            'SISU 1ª Edição': '1',
+            'SISU 2ª Edição': '2',
+            'Vestibular': '3',  # Valor hipotético
+            'Transferência': '4'  # Valor hipotético
+        }
+        
+        st.markdown("---")
+        
+        # Botão para testar com valores conhecidos
+        st.info("⚠️ **Atenção:** Precisamos descobrir os valores exatos para os campos")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col2:
+            if st.button("🚀 Gerar Relatório de Teste", type="primary", use_container_width=True):
+                with st.spinner("Gerando relatório..."):
+                    try:
+                        gerador = GeradorRelatorios(st.session_state.session)
                         
-                        if resultado['success']:
-                            st.success("✅ Teste bem-sucedido!")
-                            st.write(f"URL final: {resultado['final_url']}")
+                        # Filtros mínimos para teste
+                        filtros_teste = {
+                            'authenticity_token': '',  # Será preenchido automaticamente
+                            'idlocalidade': '1',  # Niterói
+                            'idcurso': '',  # PRECISA SER DESCOBERTO
+                            'iddesdobramento': '',  # PRECISA SER DESCOBERTO
+                            'idformaingresso': forma_ingresso_map.get(forma_ingresso, '1'),
+                            'anosem_ingresso': periodo_codigo,
+                            'commit': 'Gerar Relatório'
+                        }
+                        
+                        # Primeiro, tentar obter cursos disponíveis
+                        st.info("🔍 Obtendo cursos disponíveis para Niterói...")
+                        cursos = gerador.obter_cursos_para_localidade('1')
+                        
+                        if cursos:
+                            st.success(f"✅ Encontrados {len(cursos)} cursos")
+                            
+                            # Mostrar cursos encontrados
+                            with st.expander("📋 Cursos disponíveis"):
+                                for codigo, nome in list(cursos.items())[:20]:  # Mostrar até 20
+                                    st.write(f"`{codigo}`: {nome}")
+                            
+                            # Procurar curso de Química
+                            curso_quimica = None
+                            for codigo, nome in cursos.items():
+                                if 'química' in nome.lower():
+                                    curso_quimica = codigo
+                                    st.info(f"Curso de Química encontrado: {nome} (código: {codigo})")
+                                    break
+                            
+                            if curso_quimica:
+                                filtros_teste['idcurso'] = curso_quimica
+                                
+                                # Agora precisamos do desdobramento
+                                # Em muitos sistemas, o desdobramento é o mesmo código do curso
+                                filtros_teste['iddesdobramento'] = curso_quimica
+                                
+                                st.info("🎯 Tentando gerar relatório com valores encontrados...")
+                                
+                                try:
+                                    conteudo_excel = gerador.gerar_relatorio(filtros_teste)
+                                    
+                                    # Salvar arquivo
+                                    output = io.BytesIO()
+                                    output.write(conteudo_excel)
+                                    output.seek(0)
+                                    
+                                    st.success("✅ Relatório gerado com sucesso!")
+                                    
+                                    # Botão de download
+                                    st.download_button(
+                                        label="📥 Baixar Relatório Excel",
+                                        data=output.getvalue(),
+                                        file_name=f"relatorio_uff_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                        use_container_width=True
+                                    )
+                                    
+                                except Exception as e:
+                                    st.error(f"❌ Erro ao gerar relatório: {str(e)}")
+                                    st.info("""
+                                    **Próximos passos:**
+                                    1. Verifique os logs para mais detalhes
+                                    2. Precisamos descobrir o valor correto para 'iddesdobramento'
+                                    3. Talvez precisemos de outros campos obrigatórios
+                                    """)
+                            else:
+                                st.error("❌ Curso de Química não encontrado na lista")
                         else:
-                            st.error(f"❌ Teste falhou: Status {resultado.get('status_code')}")
-                    
-                    # Interface para testes manuais
-                    st.subheader("🔧 Teste Manual com Valores")
-                    
-                    # Criar inputs para os selects
-                    selects_para_teste = [s for s in analise['selects'] if s.get('name')]
-                    
-                    if selects_para_teste:
-                        st.write("Configure os valores para teste:")
+                            st.warning("⚠️ Não foi possível obter a lista de cursos")
+                            st.info("""
+                            **Solução alternativa:**
+                            1. Acesse manualmente o sistema
+                            2. Gere um relatório manualmente
+                            3. Inspecione os valores dos campos no formulário
+                            4. Compartilhe os valores exatos encontrados
+                            """)
                         
-                        valores_teste = {}
-                        for select in selects_para_teste[:5]:  # Testar com até 5 selects
-                            nome = select['name']
-                            opcoes = {opt['value']: f"{opt['text']} ({opt['value']})" 
-                                     for opt in select['options'] if opt['value']}
-                            
-                            if opcoes:
-                                valor_selecionado = st.selectbox(
-                                    f"{nome}:",
-                                    options=list(opcoes.keys()),
-                                    format_func=lambda x: opcoes.get(x, x),
-                                    key=f"test_{nome}"
-                                )
-                                valores_teste[nome] = valor_selecionado
-                        
-                        if st.button("Testar com Valores Selecionados", type="primary"):
-                            gerador = GeradorRelatorios(st.session_state.session)
-                            resultado = gerador.gerar_com_filtros(analise, valores_teste)
-                            
-                            if resultado:
-                                st.success("✅ Relatório gerado!")
-                                # Mostrar botão de download
-                                st.download_button(
-                                    label="📥 Baixar Relatório",
-                                    data=resultado,
-                                    file_name=f"relatorio_uff_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                                )
-                    
-                except Exception as e:
-                    st.error(f"❌ Erro na análise: {str(e)}")
+                    except Exception as e:
+                        st.error(f"❌ Erro: {str(e)}")
         
         st.markdown("---")
         st.info("""
-        **Instruções:**
-        1. Clique em **"Analisar Formulário de Relatórios"**
-        2. Aguarde a análise completa
-        3. Verifique os campos disponíveis
-        4. Teste valores diferentes
-        5. Gere o relatório
+        **🔧 Para encontrar os valores corretos:**
         
-        **Arquivos gerados:**
-        - `pagina_relatorios_completa.html`: Página completa
-        - `analise_formulario.json`: Análise estruturada
-        - `resposta_teste.html`: Respostas do servidor
+        1. **Acesse manualmente:** https://app.uff.br/graduacao/administracaoacademica/relatorios/listagens_alunos
+        2. **Preencha o formulário** para gerar um relatório de Química
+        3. **Use as ferramentas de desenvolvedor** (F12) para inspecionar:
+           - Valores do select `idcurso`
+           - Valores do select `iddesdobramento` 
+           - Valores do select `idformaingresso`
+        4. **Compartilhe os valores exatos** para atualizarmos o código
+        
+        **Valores que precisamos descobrir:**
+        - Código exato do curso de Química (Licenciatura/Bacharelado/Industrial)
+        - Código do desdobramento correspondente
+        - Código das formas de ingresso (SISU 1ª, SISU 2ª, etc.)
         """)
+        
+        # Seção para entrada manual de valores
+        with st.expander("🔧 Entrada Manual de Valores (para teste)"):
+            st.write("Digite os valores que você encontrar no formulário manual:")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                idcurso_manual = st.text_input("Código do Curso (idcurso):")
+                iddesdobramento_manual = st.text_input("Código do Desdobramento (iddesdobramento):")
+            
+            with col2:
+                idformaingresso_manual = st.text_input("Código Forma Ingresso (idformaingresso):")
+            
+            if st.button("Testar com Valores Manuais", type="secondary"):
+                if idcurso_manual and iddesdobramento_manual:
+                    with st.spinner("Testando..."):
+                        try:
+                            gerador = GeradorRelatorios(st.session_state.session)
+                            
+                            filtros_manual = {
+                                'authenticity_token': '',  # Será preenchido
+                                'idlocalidade': '1',
+                                'idcurso': idcurso_manual,
+                                'iddesdobramento': iddesdobramento_manual,
+                                'idformaingresso': idformaingresso_manual or '1',
+                                'anosem_ingresso': periodo_codigo,
+                                'commit': 'Gerar Relatório'
+                            }
+                            
+                            conteudo_excel = gerador.gerar_relatorio(filtros_manual)
+                            
+                            output = io.BytesIO()
+                            output.write(conteudo_excel)
+                            output.seek(0)
+                            
+                            st.success("✅ Sucesso com valores manuais!")
+                            
+                            st.download_button(
+                                label="📥 Baixar Relatório",
+                                data=output.getvalue(),
+                                file_name=f"relatorio_manual_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
+                            
+                        except Exception as e:
+                            st.error(f"❌ Erro: {str(e)}")
 
 
 if __name__ == "__main__":
